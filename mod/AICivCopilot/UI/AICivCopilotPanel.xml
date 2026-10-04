@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AI Civ Copilot panel. Controls and styles copied from shipped panels
+     (ChatPanel.xml, MapSearchPanel.xml) so every attribute is one the engine
+     already accepts. -->
+<Context Style="FontNormal16">
+
+	<!-- Always-visible toggle -->
+	<GridButton ID="ToggleButton" Anchor="R,T" Offset="8,46" Size="44,26" Style="ButtonControl" String="AI" ToolTip="AI Civ Copilot (Ctrl+Shift+A)"/>
+
+	<Box ID="Panel" Anchor="R,T" Offset="8,76" Size="520,600" Color="0,0,0,255" ConsumeMouse="1" Hidden="1">
+		<Box Anchor="L,T" Offset="1,1" Size="parent-2,parent-2" Color="15,56,89,255">
+			<Image Size="parent,parent" Texture="Controls_Gradient" Color="80,133,177,60"/>
+
+			<Label ID="Title" Anchor="L,T" Offset="12,8" Style="FontFlair16" String="AI CIV COPILOT" Color0="200,190,160,255"/>
+			<Label ID="Status" Anchor="R,T" Offset="40,10" Style="FontNormal14" String="waiting for bridge" Color0="170,190,210,255"/>
+			<Button ID="CloseButton" Anchor="R,T" Offset="6,6" Size="20,17" TextureOffset="0,64" StateOffsetIncrement="0,17" Texture="Controls_ButtonExtendSmall2.dds" ToolTip="Close (Ctrl+Shift+A)"/>
+			<Image Anchor="L,T" Offset="2,32" Size="parent-4,4" Texture="Controls_DecoMapScale" StretchMode="Tile" Color="42,75,108,255"/>
+
+			<ScrollPanel ID="LogScroll" Anchor="L,T" Offset="10,40" Size="parent-20,parent-92" Vertical="1" AutoScrollBar="1">
+				<ScrollBar Style="Slider_Blue" Offset="-7,0" Anchor="R,T"/>
+				<Stack ID="LogStack" Anchor="L,T" StackGrowth="Bottom" Padding="8"/>
+			</ScrollPanel>
+
+			<Grid Anchor="L,B" Offset="10,10" Size="parent-104,32" Texture="Controls_Search2" SliceCorner="30,13" SliceTextureSize="41,26">
+				<EditBox ID="InputBox" Style="EditTextArea" Size="parent-16,26" Anchor="L,C" Offset="8,0" EditMode="1" FocusStop="0" KeepFocus="1" MaxLength="2000"/>
+			</Grid>
+			<GridButton ID="SendButton" Anchor="R,B" Offset="10,10" Size="80,32" Style="ButtonControl" String="Ask"/>
+		</Box>
+	</Box>
+
+	<Instance Name="LogEntry">
+		<Label ID="Text" Anchor="L,T" Style="FontNormal14" WrapWidth="480" Color0="230,230,230,255"/>
+	</Instance>
+
+</Context>

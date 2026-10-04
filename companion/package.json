@@ -1,0 +1,20 @@
+{
+  "name": "ai-civ-copilot-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Localhost bridge between a running Civilization VI game (FireTuner socket) and Claude.",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "luaparse": "^0.3.1"
+  }
+}

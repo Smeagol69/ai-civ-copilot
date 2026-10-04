@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod id="85e482ae-bb00-4f88-a1a0-0284b37de970" version="1">
+	<Properties>
+		<Name>AI Civ Copilot</Name>
+		<Teaser>An AI assistant that can read and change your running game.</Teaser>
+		<Description>In-game panel (Ctrl+Shift+A) for the AI Civ Copilot bridge. Ask questions about your empire or tell it to change the game. Requires the companion bridge running and EnableTuner 1 in AppOptions.txt.</Description>
+		<Authors>AI Civ Copilot</Authors>
+		<AffectsSavedGames>0</AffectsSavedGames>
+		<CompatibleVersions>1.2,2.0</CompatibleVersions>
+	</Properties>
+	<InGameActions>
+		<AddUserInterfaces id="AICivCopilotUI">
+			<Properties>
+				<Context>InGame</Context>
+			</Properties>
+			<File>UI/AICivCopilotPanel.xml</File>
+		</AddUserInterfaces>
+		<ImportFiles id="AICivCopilotFiles">
+			<File>UI/AICivCopilotPanel.lua</File>
+			<File>UI/AICivCopilotPanel.xml</File>
+		</ImportFiles>
+	</InGameActions>
+	<Files>
+		<File>UI/AICivCopilotPanel.lua</File>
+		<File>UI/AICivCopilotPanel.xml</File>
+	</Files>
+</Mod>
