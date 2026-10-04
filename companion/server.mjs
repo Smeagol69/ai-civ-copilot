@@ -190,6 +190,13 @@ async function pollPanel() {
   if (!res) return;
   if (res.panel && !state.panel) {
     log("in-game panel detected");
+    // A mod's UI context starts hidden; make sure the panel's is shown (the
+    // panel does this itself too - this covers older installed versions).
+    try {
+      await game.lua("AICivCopilotPanel", "ContextPtr:SetHide(false)");
+    } catch (err) {
+      log(`could not show the panel context: ${err.message}`);
+    }
     // Tell the panel who is answering, and give it the saved abilities.
     await reply(0, "hello", DEFAULT_MODEL);
     await sendButtons("abilities", abilityButtons(memory));

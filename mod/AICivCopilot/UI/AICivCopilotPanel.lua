@@ -424,7 +424,16 @@ local function OnSelectionChanged()
 	end
 end
 
+-- Contexts added with AddUserInterfaces start hidden: nothing in them draws
+-- or receives input until the context is shown (found live: the button
+-- existed and was "visible", but ContextPtr:IsHidden() was true).
+local function ShowContext()
+	ContextPtr:SetHide(false);
+end
+
 function Initialize()
+	ShowContext();
+	Events.LoadScreenClose.Add(ShowContext);
 	ContextPtr:SetInputHandler(OnInput, true);
 	ContextPtr:SetUpdate(OnUpdate);
 	Controls.ToggleButton:RegisterCallback(Mouse.eLClick, Toggle);
