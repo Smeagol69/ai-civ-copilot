@@ -1,0 +1,39 @@
+{
+  "name": "empire_yields_by_city",
+  "description": "Per-city yields (food, production, gold, science, culture, faith) and empire totals for one alive player, read from the simulation (City:GetYield, gross per turn). Use for 'which city makes the most X' or empire yield totals. Params: playerId (default local player; must be in PlayerManager.GetAliveIDs()), sortBy (yield name, highest first).",
+  "state": "GameCore_Tuner",
+  "kind": "query",
+  "properties": {
+    "playerId": {
+      "type": "integer",
+      "description": "player id (default: local player)"
+    },
+    "sortBy": {
+      "type": "string",
+      "enum": [
+        "food",
+        "production",
+        "gold",
+        "science",
+        "culture",
+        "faith"
+      ],
+      "description": "sort cities by this yield, highest first"
+    }
+  },
+  "required": [],
+  "lua": "-- Per-city yields for one player, read from the simulation (GameCore_Tuner).\n-- P.playerId: player id (default: the local player). Must be alive.\n-- P.sortBy:   optional yield name (food, production, gold, science, culture, faith) to sort cities by, highest first.\nlocal pid = P.playerId\nif pid == nil then pid = Game.GetLocalPlayer() end\nlocal alive = PlayerManager.GetAliveIDs()\nlocal found = false\nfor _, id in ipairs(alive) do\n  if id == pid then found = true end\nend\nif not found then\n  emitJson({ ok = false, error = 'player ' .. tostring(pid) .. ' is not an alive player id', alive = alive })\n  return\nend\nlocal names = { 'FOOD', 'PRODUCTION', 'GOLD', 'SCIENCE', 'CULTURE', 'FAITH' }\nlocal rows, totals = {}, {}\nfor _, c in Players[pid]:GetCities():Members() do\n  local r = { id = c:GetID(), name = L(c:GetName()), x = c:GetX(), y = c:GetY(), pop = c:GetPopulation() }\n  for _, y in ipairs(names) do\n    local key = string.lower(y)\n    local v = c:GetYield(YieldTypes[y]) or 0\n    r[key] = math.floor(v * 10 + 0.5) / 10\n    totals[key] = (totals[key] or 0) + v\n  end\n  rows[#rows + 1] = r\nend\nfor k, v in pairs(totals) do totals[k] = math.floor(v * 10 + 0.5) / 10 end\nlocal sortBy = P.sortBy and string.lower(P.sortBy) or nil\nif sortBy ~= nil and totals[sortBy] ~= nil then\n  table.sort(rows, function(a, b) return (a[sortBy] or 0) > (b[sortBy] or 0) end)\nend\nemitJson({ ok = true, playerId = pid, cityCount = #rows, sortedBy = sortBy, totals = totals, cities = rows, note = 'yields are the game values from City:GetYield (gross, per turn), rounded to 0.1' })\n",
+  "tested": {
+    "at": "2026-10-04T19:19:10.818Z",
+    "params": {
+      "playerId": 0
+    },
+    "result": "{\"value\":{\"note\":\"yields are the game values from City:GetYield (gross, per turn), rounded to 0.1\",\"playerId\":0,\"cities\":[{\"x\":11,\"gold\":21.5,\"name\":\"Buda\",\"id\":65536,\"y\":31,\"production\":9.9,\"food\":21,\"science\":12.2,\"faith\":2.7,\"culture\":2.8,\"pop\":7},{\"x\":7,\"gold\":4,\"name\":\"Esztergom\",\"id\":262145,\"y\":36,\"production\":4,\"food\":5,\"science\":2,\"faith\":1,\"culture\":0.6,\"pop\":2},{\"x\":4,\"gold\":2.3,\"name\":\"Debrecen\",\"id\":327682,\"y\":34,\"production\":3.8,\"food\":6,\"science\":4.5,\"faith\":3.8,\"culture\":1.2,\"pop\":2}],\"totals\":{\"production\":17.7,\"gold\":27.9,\"science\":18.7,\"food\":32,\"culture\":4.6,\"faith\":7.5},\"cityCount\":3,\"ok\":true},\"text\":[]}"
+  },
+  "createdAt": "2026-10-04T19:19:10.818Z",
+  "updatedAt": "2026-10-04T19:19:10.818Z",
+  "uses": 4,
+  "history": [],
+  "lastUsed": "2026-10-04T19:19:19.348Z",
+  "lastOk": true
+}
