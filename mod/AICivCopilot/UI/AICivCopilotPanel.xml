@@ -1,35 +1,64 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AI Civ Copilot panel. Controls and styles copied from shipped panels
-     (ChatPanel.xml, MapSearchPanel.xml) so every attribute is one the engine
-     already accepts. -->
+<!-- AI Civ Copilot panel: a tabbed set of buttons for every feature, plus a
+     box for free-text questions to the AI. Every control type, style and
+     texture here is one the shipped UI already uses (ChatPanel, MapSearchPanel,
+     LaunchBar, CityPanel), so the engine accepts them. Sizes that depend on the
+     screen or on the number of buttons are set in Lua (Layout). -->
 <Context Style="FontNormal16">
 
-	<!-- Always-visible toggle -->
-	<GridButton ID="ToggleButton" Anchor="R,T" Offset="8,46" Size="44,26" Style="ButtonControl" String="AI" ToolTip="AI Civ Copilot (Ctrl+Shift+A)"/>
+	<!-- Toggle: top-centre, below the top bar - clear of the launch bar (left)
+	     and the screen-hook bar and leader ribbon (right). -->
+	<GridButton ID="ToggleButton" Anchor="C,T" Offset="0,34" Size="130,26" Style="ButtonControl" String="AI Copilot" ToolTip="AI Civ Copilot (Ctrl+Shift+A)"/>
 
-	<Box ID="Panel" Anchor="R,T" Offset="8,76" Size="520,600" Color="0,0,0,255" ConsumeMouse="1" Hidden="1">
-		<Box Anchor="L,T" Offset="1,1" Size="parent-2,parent-2" Color="15,56,89,255">
-			<Image Size="parent,parent" Texture="Controls_Gradient" Color="80,133,177,60"/>
+	<Box ID="Panel" Anchor="R,T" Offset="8,112" Size="600,640" Color="0,0,0,255" ConsumeMouse="1" Hidden="1">
+		<Box ID="PanelInner" Anchor="L,T" Offset="1,1" Size="598,638" Color="15,56,89,255">
+			<Image ID="PanelGradient" Size="598,638" Texture="Controls_Gradient" Color="80,133,177,60"/>
 
-			<Label ID="Title" Anchor="L,T" Offset="12,8" Style="FontFlair16" String="AI CIV COPILOT" Color0="200,190,160,255"/>
-			<Label ID="Status" Anchor="R,T" Offset="40,10" Style="FontNormal14" String="waiting for bridge" Color0="170,190,210,255"/>
-			<Button ID="CloseButton" Anchor="R,T" Offset="6,6" Size="20,17" TextureOffset="0,64" StateOffsetIncrement="0,17" Texture="Controls_ButtonExtendSmall2.dds" ToolTip="Close (Ctrl+Shift+A)"/>
-			<Image Anchor="L,T" Offset="2,32" Size="parent-4,4" Texture="Controls_DecoMapScale" StretchMode="Tile" Color="42,75,108,255"/>
+			<!-- Header -->
+			<Label ID="Title" Anchor="L,T" Offset="12,9" Style="FontFlair16" String="AI CIV COPILOT" Color0="200,190,160,255"/>
+			<Label ID="Status" Anchor="L,T" Offset="170,11" Style="FontNormal14" String="Waiting for the bridge..." Color0="170,190,210,255"/>
+			<GridButton ID="NewButton" Anchor="R,T" Offset="34,5" Size="64,24" Style="ButtonControl" String="New" ToolTip="Start a new conversation"/>
+			<Button ID="CloseButton" Anchor="R,T" Offset="8,8" Size="20,17" TextureOffset="0,64" StateOffsetIncrement="0,17" Texture="Controls_ButtonExtendSmall2.dds" ToolTip="Close (Ctrl+Shift+A)"/>
+			<Image Anchor="L,T" Offset="2,34" Size="594,4" Texture="Controls_DecoMapScale" StretchMode="Tile" Color="42,75,108,255"/>
 
-			<ScrollPanel ID="LogScroll" Anchor="L,T" Offset="10,40" Size="parent-20,parent-92" Vertical="1" AutoScrollBar="1">
+			<!-- Tabs -->
+			<Stack ID="TabStack" Anchor="L,T" Offset="8,42" StackGrowth="Right" Padding="2"/>
+			<Label ID="Selection" Anchor="L,T" Offset="12,72" Style="FontNormal14" String="" Color0="170,190,210,255"/>
+
+			<!-- Buttons for the current tab (rows built in Lua) -->
+			<Stack ID="ButtonArea" Anchor="L,T" Offset="8,92" StackGrowth="Bottom" Padding="4"/>
+			<Image ID="LogDivider" Anchor="L,T" Offset="2,190" Size="594,4" Texture="Controls_DecoMapScale" StretchMode="Tile" Color="42,75,108,255"/>
+
+			<!-- Conversation -->
+			<ScrollPanel ID="LogScroll" Anchor="L,T" Offset="10,198" Size="578,384" Vertical="1" AutoScrollBar="1">
 				<ScrollBar Style="Slider_Blue" Offset="-7,0" Anchor="R,T"/>
 				<Stack ID="LogStack" Anchor="L,T" StackGrowth="Bottom" Padding="8"/>
 			</ScrollPanel>
 
-			<Grid Anchor="L,B" Offset="10,10" Size="parent-104,32" Texture="Controls_Search2" SliceCorner="30,13" SliceTextureSize="41,26">
-				<EditBox ID="InputBox" Style="EditTextArea" Size="parent-16,26" Anchor="L,C" Offset="8,0" EditMode="1" FocusStop="0" KeepFocus="1" MaxLength="2000"/>
-			</Grid>
-			<GridButton ID="SendButton" Anchor="R,B" Offset="10,10" Size="80,32" Style="ButtonControl" String="Ask"/>
+			<!-- Free-text question for the AI -->
+			<Container ID="InputRow" Anchor="L,B" Offset="10,10" Size="578,32">
+				<Grid Anchor="L,C" Size="488,32" Texture="Controls_Search2" SliceCorner="30,13" SliceTextureSize="41,26">
+					<EditBox ID="InputBox" Style="EditTextArea" Size="472,26" Anchor="L,C" Offset="8,0" EditMode="1" FocusStop="0" KeepFocus="1" MaxLength="2000"/>
+				</Grid>
+				<GridButton ID="SendButton" Anchor="R,C" Size="84,32" Style="ButtonControl" String="Ask AI"/>
+			</Container>
 		</Box>
 	</Box>
 
 	<Instance Name="LogEntry">
-		<Label ID="Text" Anchor="L,T" Style="FontNormal14" WrapWidth="480" Color0="230,230,230,255"/>
+		<Label ID="Text" Anchor="L,T" Style="FontNormal14" WrapWidth="556" Color0="230,230,230,255"/>
+	</Instance>
+
+	<Instance Name="TabButton">
+		<GridButton ID="Button" Size="82,24" Style="ButtonControl" String="Tab"/>
+	</Instance>
+
+	<Instance Name="ButtonRow">
+		<Stack ID="Row" StackGrowth="Right" Padding="4"/>
+	</Instance>
+
+	<Instance Name="ActionButton">
+		<GridButton ID="Button" Size="142,26" Style="ButtonControl" String="Action"/>
 	</Instance>
 
 </Context>

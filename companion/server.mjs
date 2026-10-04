@@ -17,6 +17,7 @@ import { performAction } from "./lib/actions.mjs";
 import { runTool, allTools } from "./lib/tools.mjs";
 import { empireSummary } from "./lib/solvers.mjs";
 import { suspects } from "./lib/inflight.mjs";
+import { handlePanelRequest, abilityButtons, AI_PROMPTS } from "./lib/panel.mjs";
 
 const PORT = Number(process.env.AICIV_PORT || 8737);
 const POLL_MS = Number(process.env.AICIV_POLL_MS || 500);
@@ -61,6 +62,15 @@ m.bridgeTicks = (m.bridgeTicks or 0) + 1
 emitJson({ panel = true, questions = q, turn = Game.GetCurrentGameTurn() })
 `;
 const REPLY_LUA = `LuaEvents.AICivCopilot_Reply(P.id, P.kind, P.text)`;
+const BUTTONS_LUA = `LuaEvents.AICivCopilot_Buttons(P.group, P.items)`;
+
+async function sendButtons(group, items) {
+  try {
+    await game.lua(UI_STATE, BUTTONS_LUA, { params: { group, items } });
+  } catch (err) {
+    log(`panel buttons failed: ${err.message}`);
+  }
+}
 
 function plain(text) {
   return String(text || "")
@@ -101,6 +111,72 @@ async function answer(source, question, onProgress) {
   }
 }
 
+// AI requests run one at a time in the background, so instant buttons and
+// game actions answer right away even while the model is thinking.
+const aiQueue = [];
+let aiRunning = false;
+
+async function runAiQueue() {
+  if (aiRunning) return;
+  aiRunning = true;
+  try {
+    while (aiQueue.length) {
+      const job = aiQueue.shift();
+      await reply(job.id, "status", "Thinking...");
+      try {
+        const text = await job.run((p) => reply(job.id, "status", p));
+        await reply(job.id, "answer", text);
+        if (job.refreshAbilities) await sendButtons("abilities", abilityButtons(memory));
+      } catch (err) {
+        state.lastError = err.message;
+        await reply(job.id, "error", `Copilot error: ${err.message}`);
+      }
+    }
+  } finally {
+    aiRunning = false;
+  }
+}
+
+async function handlePanel(q) {
+  const kind = q.kind || "ask";
+  if (kind === "new") {
+    histories.set("panel", []);
+    return;
+  }
+  if (kind === "ask") {
+    const text = String(q.text || "").trim();
+    if (!text) return;
+    log(`panel question #${q.id}: ${text}`);
+    aiQueue.push({ id: q.id, refreshAbilities: true, run: async (onProgress) => (await answer("panel", text, onProgress)).answer });
+    if (aiQueue.length > 1 || aiRunning) await reply(q.id, "status", `Queued behind ${aiQueue.length - 1 + (aiRunning ? 1 : 0)} AI request(s)...`);
+    runAiQueue();
+    return;
+  }
+  // A button.
+  const key = String(q.key || "");
+  log(`panel button #${q.id}: ${key}`);
+  if (AI_PROMPTS[key]) {
+    aiQueue.push({
+      id: q.id,
+      refreshAbilities: key === "explore_ai",
+      run: async (onProgress) => {
+        const res = await handlePanelRequest(makeCtx(onProgress), q, { ask: (question) => answer("panel", question, onProgress) });
+        return res.text;
+      },
+    });
+    runAiQueue();
+    return;
+  }
+  try {
+    const res = await handlePanelRequest(makeCtx((p) => reply(q.id, "status", p)), q);
+    if (res.buttons) await sendButtons(res.buttons.group, res.buttons.items);
+    await reply(q.id, res.kind || "answer", res.text);
+  } catch (err) {
+    state.lastError = err.message;
+    await reply(q.id, "error", `${key}: ${err.message}`);
+  }
+}
+
 async function pollPanel() {
   if (!game.connected) return;
   let res;
@@ -112,22 +188,15 @@ async function pollPanel() {
     return;
   }
   if (!res) return;
-  if (res.panel && !state.panel) log("in-game panel detected");
+  if (res.panel && !state.panel) {
+    log("in-game panel detected");
+    // Tell the panel who is answering, and give it the saved abilities.
+    await reply(0, "hello", DEFAULT_MODEL);
+    await sendButtons("abilities", abilityButtons(memory));
+  }
   state.panel = !!res.panel;
   state.turn = res.turn ?? state.turn;
-  for (const q of res.questions || []) {
-    const text = String(q.text || "").trim();
-    if (!text) continue;
-    log(`panel question #${q.id}: ${text}`);
-    await reply(q.id, "status", "Thinking...");
-    try {
-      const res2 = await answer("panel", text, (p) => reply(q.id, "status", p));
-      await reply(q.id, "answer", res2.answer);
-    } catch (err) {
-      state.lastError = err.message;
-      await reply(q.id, "error", `Copilot error: ${err.message}`);
-    }
-  }
+  for (const q of res.questions || []) await handlePanel(q);
 }
 
 // When the game connection drops, say what was running at that moment: if
