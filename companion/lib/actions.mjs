@@ -11,6 +11,7 @@ import { UI_STATE, CORE_STATE, loadLua, buildScript, decodeLines } from "./game.
 const int = { type: "integer" };
 const str = { type: "string" };
 const player = { type: "integer", description: "Player id; defaults to the local player" };
+const treeMode = { type: "string", enum: ["front", "replace", "append"] };
 
 export const ACTIONS = {
   // ---------------------------------------------------------------- PLAY
@@ -28,13 +29,13 @@ export const ACTIONS = {
   },
   set_research: {
     kind: "play", state: UI_STATE,
-    description: "Choose the current research (TECH_*).",
-    properties: { tech: str }, required: ["tech"],
+    description: "Research a tech (TECH_*), including far ones (the game's own path is queued). mode: front (default: research it now, then continue the existing queue), replace (queue becomes just this path, like a click in the tech tree), append (after the existing queue, like shift-click).",
+    properties: { tech: str, mode: treeMode }, required: ["tech"],
   },
   set_civic: {
     kind: "play", state: UI_STATE,
-    description: "Choose the current civic (CIVIC_*).",
-    properties: { civic: str }, required: ["civic"],
+    description: "Progress a civic (CIVIC_*), including far ones. mode: front (default), replace, or append - same meaning as set_research.",
+    properties: { civic: str, mode: treeMode }, required: ["civic"],
   },
   move_unit: {
     kind: "play", state: UI_STATE,
@@ -193,12 +194,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function runActionLua(game, state, P) {
   await game.ensureConnected();
-  const lines = await game.tuner.exec(state, buildScript(loadLua("actions"), P), { timeoutMs: 20000 });
+  const lines = await game.tuner.exec(state, buildScript(loadLua("actions"), P), { timeoutMs: 20000, label: `action:${P.action}` });
   return decodeLines(lines).value;
 }
 
 // Execute one action and return the game's own account of what happened.
-export async function performAction(game, name, args = {}, { journal, verifyDelayMs = 450 } = {}) {
+// Requests are asynchronous; read back a few times before calling it failed.
+const VERIFY_DELAYS_MS = [350, 500, 800, 1200];
+
+export async function performAction(game, name, args = {}, { journal, verifyDelayMs } = {}) {
   const v = validateAction(name, args);
   if (!v.ok) return { action: name, ok: false, stage: "validate", reason: v.reason };
   const def = ACTIONS[name] || ACTION_QUERIES[name];
@@ -211,12 +215,21 @@ export async function performAction(game, name, args = {}, { journal, verifyDela
   }
   const out = { action: name, kind: def.kind || "query", args, ...result };
   if (def.kind === "play" && result?.ok && result.requested && !def.noVerify) {
-    // Requests are processed by the game asynchronously. Read the world back.
-    await sleep(verifyDelayMs);
-    try {
-      out.verified = await runActionLua(game, def.state, { ...args, before: result.before, action: `verify_${name}` });
-    } catch (err) {
-      out.verified = { ok: false, reason: `read-back failed: ${err.message}` };
+    // Requests are processed by the game asynchronously. Read the world back,
+    // retrying briefly: an early read was observed live to miss a change that
+    // landed a moment later.
+    const delays = verifyDelayMs !== undefined ? [verifyDelayMs] : VERIFY_DELAYS_MS;
+    const extra = { before: result.before, queueBefore: result.queueBefore };
+    for (let i = 0; i < delays.length; i++) {
+      await sleep(delays[i]);
+      try {
+        out.verified = await runActionLua(game, def.state, { ...args, ...extra, action: `verify_${name}` });
+      } catch (err) {
+        out.verified = { ok: false, reason: `read-back failed: ${err.message}` };
+      }
+      out.verified = out.verified || { ok: false, reason: "read-back returned no data" };
+      out.verified.attempts = i + 1;
+      if (out.verified.ok) break;
     }
     out.ok = !!out.verified?.ok;
     if (!out.ok) out.reason = out.reason || "requested, but the game's state does not show it took effect";

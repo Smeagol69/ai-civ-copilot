@@ -140,41 +140,125 @@ function A.verify_purchase(P)
   return { ok = true, goldNow = Players[me]:GetTreasury():GetGoldBalance(), faithNow = Players[me]:GetReligion():GetFaithBalance() }
 end
 
-function A.set_research(P)
-  local row = GameInfo.Technologies[P.tech]
-  if not row then return fail('unknown tech: ' .. tostring(P.tech)) end
-  local te = Players[me]:GetTechs()
-  if te:HasTech(row.Index) then return fail('already researched') end
-  if not te:CanResearch(row.Index) then return fail('prerequisites not met') end
-  local params = {}
-  params[PlayerOperations.PARAM_TECH_TYPE] = row.Hash
-  params[PlayerOperations.PARAM_INSERT_MODE] = PlayerOperations.VALUE_EXCLUSIVE
-  UI.RequestPlayerOperation(me, PlayerOperations.RESEARCH, params)
-  return { ok = true, requested = true, turns = te:GetTurnsToResearch(row.Index) }
-end
-function A.verify_set_research(P)
-  local t = Players[me]:GetTechs():GetResearchingTech()
-  local cur = t >= 0 and GameInfo.Technologies[t].TechnologyType or nil
-  return { ok = cur == P.tech, researching = cur }
+-- Research and civics follow the tech/civics tree (Screens/TechTree.lua,
+-- Screens/CivicsTree.lua): the request carries the whole PATH to the target
+-- (GetResearchPath / GetCivicPath), so far targets work, and the insert mode
+-- decides what happens to the player's existing queue:
+--   front   (default) research the target now, then continue the old queue
+--   replace the queue becomes just the path (a plain click in the tree)
+--   append  add the path after the existing queue (shift-click)
+-- A plain EXCLUSIVE request wipes the queue: found live on 2026-10-04, when a
+-- test switch erased a 7-civic plan.
+local function queueTypes(q, tbl, key)
+  local out = {}
+  if type(q) ~= 'table' then return out end
+  local items = {}
+  for i, v in pairs(q) do items[#items + 1] = { i = i, v = v } end
+  table.sort(items, function(a, b) return a.i < b.i end)
+  for _, e in ipairs(items) do
+    local r = GameInfo[tbl][e.v]
+    out[#out + 1] = r and r[key] or e.v
+  end
+  return out
 end
 
-function A.set_civic(P)
-  local row = GameInfo.Civics[P.civic]
-  if not row then return fail('unknown civic: ' .. tostring(P.civic)) end
-  local cu = Players[me]:GetCulture()
-  if cu:HasCivic(row.Index) then return fail('already completed') end
-  if not cu:CanProgress(row.Index) then return fail('prerequisites not met') end
+local function hashesToTypes(path, tbl, key)
+  local byHash = {}
+  for r in GameInfo[tbl]() do byHash[r.Hash] = r[key] end
+  local out = {}
+  if type(path) == 'table' then
+    local items = {}
+    for i, h in pairs(path) do items[#items + 1] = { i = i, h = h } end
+    table.sort(items, function(a, b) return a.i < b.i end)
+    for _, e in ipairs(items) do out[#out + 1] = byHash[e.h] or e.h end
+  end
+  return out
+end
+
+local function requestTree(op, paramKey, payload, append)
   local params = {}
-  params[PlayerOperations.PARAM_CIVIC_TYPE] = row.Hash
-  params[PlayerOperations.PARAM_INSERT_MODE] = PlayerOperations.VALUE_EXCLUSIVE
-  UI.RequestPlayerOperation(me, PlayerOperations.PROGRESS_CIVIC, params)
-  return { ok = true, requested = true }
+  params[PlayerOperations[paramKey]] = payload
+  if append then
+    params[PlayerOperations.PARAM_INSERT_MODE] = PlayerOperations.VALUE_APPEND
+  else
+    params[PlayerOperations.PARAM_INSERT_MODE] = PlayerOperations.VALUE_EXCLUSIVE
+  end
+  UI.RequestPlayerOperation(me, PlayerOperations[op], params)
 end
-function A.verify_set_civic(P)
-  local c = Players[me]:GetCulture():GetProgressingCivic()
-  local cur = c >= 0 and GameInfo.Civics[c].CivicType or nil
-  return { ok = cur == P.civic, progressing = cur }
+
+local function setTreeTarget(P, spec)
+  local row = GameInfo[spec.tbl][P[spec.arg]]
+  if not row then return fail('unknown ' .. spec.arg .. ': ' .. tostring(P[spec.arg])) end
+  local obj = spec.obj()
+  if spec.has(obj, row.Index) then return fail('already ' .. spec.doneWord) end
+  local mode = P.mode or 'front'
+  if mode ~= 'front' and mode ~= 'replace' and mode ~= 'append' then return fail('mode must be front, replace or append') end
+  local queueBefore = queueTypes(spec.queue(obj), spec.tbl, spec.key)
+  local path = spec.path(obj, row.Hash)
+  local pathTypes = hashesToTypes(path, spec.tbl, spec.key)
+  if #pathTypes == 0 then return fail('the game returned no path to ' .. tostring(P[spec.arg])) end
+  requestTree(spec.op, spec.param, path, mode == 'append')
+  if mode == 'front' then
+    local inPath = {}
+    for _, t in ipairs(pathTypes) do inPath[t] = true end
+    for _, t in ipairs(queueBefore) do
+      local r = GameInfo[spec.tbl][t]
+      if r and not inPath[t] and not spec.has(obj, r.Index) then requestTree(spec.op, spec.param, r.Hash, true) end
+    end
+  end
+  return { ok = true, requested = true, mode = mode, path = pathTypes, queueBefore = queueBefore }
 end
+
+local function verifyTreeTarget(P, spec)
+  local obj = spec.obj()
+  local queue = queueTypes(spec.queue(obj), spec.tbl, spec.key)
+  local cur = spec.current(obj)
+  local found = (cur == P[spec.arg])
+  for _, t in ipairs(queue) do if t == P[spec.arg] then found = true end end
+  local o = { ok = found, current = cur, queue = queue }
+  if found and (P.mode or 'front') == 'front' and type(P.queueBefore) == 'table' then
+    local present = {}
+    for _, t in ipairs(queue) do present[t] = true end
+    local lost = {}
+    for _, t in ipairs(P.queueBefore) do
+      local r = GameInfo[spec.tbl][t]
+      if r and not present[t] and not spec.has(obj, r.Index) and t ~= cur then lost[#lost + 1] = t end
+    end
+    o.queueKept = (#lost == 0)
+    if #lost > 0 then o.lostFromQueue = lost end
+  end
+  return o
+end
+
+local RESEARCH = {
+  tbl = 'Technologies', key = 'TechnologyType', arg = 'tech', doneWord = 'researched',
+  op = 'RESEARCH', param = 'PARAM_TECH_TYPE',
+  obj = function() return Players[me]:GetTechs() end,
+  has = function(o, i) return o:HasTech(i) end,
+  queue = function(o) return o:GetResearchQueue() end,
+  path = function(o, h) return o:GetResearchPath(h) end,
+  current = function(o)
+    local t = o:GetResearchingTech()
+    return t >= 0 and GameInfo.Technologies[t].TechnologyType or nil
+  end,
+}
+local CIVICS = {
+  tbl = 'Civics', key = 'CivicType', arg = 'civic', doneWord = 'completed',
+  op = 'PROGRESS_CIVIC', param = 'PARAM_CIVIC_TYPE',
+  obj = function() return Players[me]:GetCulture() end,
+  has = function(o, i) return o:HasCivic(i) end,
+  queue = function(o) return o:GetCivicQueue() end,
+  path = function(o, h) return o:GetCivicPath(h) end,
+  current = function(o)
+    local c = o:GetProgressingCivic()
+    return c >= 0 and GameInfo.Civics[c].CivicType or nil
+  end,
+}
+
+function A.set_research(P) return setTreeTarget(P, RESEARCH) end
+function A.verify_set_research(P) return verifyTreeTarget(P, RESEARCH) end
+function A.set_civic(P) return setTreeTarget(P, CIVICS) end
+function A.verify_set_civic(P) return verifyTreeTarget(P, CIVICS) end
 
 function A.move_unit(P)
   local u = uiUnit(P)

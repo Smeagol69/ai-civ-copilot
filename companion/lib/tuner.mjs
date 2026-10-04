@@ -14,6 +14,9 @@
 // Protocol reference: lmwilki/civ6-mcp (MIT), src/civ_mcp/tuner_client.py.
 
 import net from "node:net";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { EventEmitter } from "node:events";
 
 export const TAG_HELP = 1;
@@ -22,6 +25,67 @@ export const TAG_HANDSHAKE = 4;
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 4318;
 const PORT_SCAN = Number(process.env.CIV6_TUNER_PORT_SCAN || 6);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
+// Machine-wide mutex around every tuner conversation. The game must only ever
+// see one caller at a time: on 2026-10-04 thirteen concurrent clients (test
+// agents, each with its own connection) made LSQ return an empty state list
+// intermittently, and the game crashed with an access violation during that
+// burst. A lock file in the temp dir serialises every process - the bridge,
+// the CLI, scripts - per tuner port. A holder that died, or overran its
+// declared hold time, is evicted.
+export class TunerLock {
+  constructor(file) {
+    this.file = file;
+  }
+
+  async acquire(holdMs, waitMs = 180000) {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      try {
+        const fd = fs.openSync(this.file, "wx");
+        fs.writeSync(fd, JSON.stringify({ pid: process.pid, until: Date.now() + holdMs }));
+        fs.closeSync(fd);
+        return;
+      } catch (err) {
+        if (err.code !== "EEXIST") throw err;
+      }
+      let info = null;
+      let age = 0;
+      try {
+        age = Date.now() - fs.statSync(this.file).mtimeMs;
+        info = JSON.parse(fs.readFileSync(this.file, "utf8"));
+      } catch {
+        // Mid-write or just released; judge by age only.
+      }
+      const stale = info ? !pidAlive(info.pid) || Date.now() > info.until : age > 5000;
+      if (stale) {
+        try {
+          fs.unlinkSync(this.file);
+        } catch {}
+        continue;
+      }
+      if (Date.now() > deadline) throw new Error(`timed out waiting for the tuner lock (held by pid ${info?.pid})`);
+      await sleep(15);
+    }
+  }
+
+  release() {
+    try {
+      fs.unlinkSync(this.file);
+    } catch {}
+  }
+}
 
 export function encodeFrame(tag, payload) {
   const body = Buffer.concat([Buffer.from(payload, "utf8"), Buffer.from([0])]);
@@ -98,12 +162,18 @@ export class LuaError extends Error {
 }
 
 export class TunerClient extends EventEmitter {
-  constructor({ host = DEFAULT_HOST, port = DEFAULT_PORT, log = () => {} } = {}) {
+  // lock: a TunerLock, or false to disable (default: one lock file per port).
+  // trace(event): called with {phase:"start"|"end"|"error", ...} around every
+  // command, before it is sent - the record of what was in flight if the game
+  // dies.
+  constructor({ host = DEFAULT_HOST, port = DEFAULT_PORT, log = () => {}, lock, trace } = {}) {
     super();
     this.host = host;
     this.port = port;
     this.basePort = port;
     this.log = log;
+    this.lock = lock === false ? null : lock || new TunerLock(path.join(os.tmpdir(), `aiciv-tuner-${host}-${port}.lock`));
+    this.trace = trace || null;
     this.socket = null;
     this.decoder = new FrameDecoder();
     this.waiters = [];
@@ -214,23 +284,39 @@ export class TunerClient extends EventEmitter {
     this.socket.write(encodeFrame(tag, payload));
   }
 
+  async #locked(holdMs, fn) {
+    if (!this.lock) return fn();
+    await this.lock.acquire(holdMs);
+    try {
+      return await fn();
+    } finally {
+      this.lock.release();
+    }
+  }
+
+  async #lsq() {
+    this.inbox = [];
+    this.#send(TAG_HANDSHAKE, "LSQ:");
+    const lsq = await this.#next(5000);
+    this.states = lsq ? parseStateList(lsq.payload) : [];
+    return this.states;
+  }
+
   async handshake() {
-    // Drain anything the game sent on connect.
-    while (await this.#next(250)) {}
-    this.#send(TAG_HANDSHAKE, "APP:");
-    const app = await this.#next(5000);
-    this.app = app ? app.payload : null;
-    await this.refreshStates();
+    return this.#serial(() =>
+      this.#locked(15000, async () => {
+        // Drain anything the game sent on connect.
+        while (await this.#next(250)) {}
+        this.#send(TAG_HANDSHAKE, "APP:");
+        const app = await this.#next(5000);
+        this.app = app ? app.payload : null;
+        await this.#lsq();
+      }),
+    );
   }
 
   async refreshStates() {
-    return this.#serial(async () => {
-      this.inbox = [];
-      this.#send(TAG_HANDSHAKE, "LSQ:");
-      const lsq = await this.#next(5000);
-      this.states = lsq ? parseStateList(lsq.payload) : [];
-      return this.states;
-    });
+    return this.#serial(() => this.#locked(10000, () => this.#lsq()));
   }
 
   stateIndex(name) {
@@ -250,15 +336,17 @@ export class TunerClient extends EventEmitter {
   //     print() noise from the game or other mods never leaks into results;
   //   - a runtime error is caught and reported in-band;
   //   - a sentinel marks the end so we never wait for a timeout on success.
-  async exec(stateName, body, { timeoutMs = 15000 } = {}) {
-    return this.#serial(async () => {
+  async exec(stateName, body, { timeoutMs = 15000, label } = {}) {
+    return this.#serial(() => this.#locked(timeoutMs + 10000, () => this.#exec(stateName, body, timeoutMs, label)));
+  }
+
+  async #exec(stateName, body, timeoutMs, label) {
+    {
       // Anything still buffered is print noise from earlier; it is not ours.
       this.inbox = [];
       let idx = this.stateIndex(stateName);
       if (idx === null) {
-        this.#send(TAG_HANDSHAKE, "LSQ:");
-        const lsq = await this.#next(5000);
-        this.states = lsq ? parseStateList(lsq.payload) : [];
+        await this.#lsq();
         idx = this.stateIndex(stateName);
       }
       if (idx === null) {
@@ -277,28 +365,36 @@ export class TunerClient extends EventEmitter {
         `local __ok, __err = pcall(function() ${body}\nend) ` +
         `if not __ok then print("${errTag}" .. tostring(__err)) end ` +
         `print("${end}")`;
+      const started = Date.now();
+      this.trace?.({ phase: "start", id: n, state: stateName, label, port: this.port, pid: process.pid, body });
       this.#send(TAG_COMMAND, `CMD:${idx}:${lua}`);
 
       const lines = [];
       const deadline = Date.now() + timeoutMs;
-      for (;;) {
-        const left = deadline - Date.now();
-        if (left <= 0) throw new LuaError(`Lua in ${stateName} timed out after ${timeoutMs} ms`, { state: stateName });
-        const frame = await this.#next(left);
-        if (!frame) continue;
-        if (frame.payload.startsWith("ERR:")) {
-          throw new LuaError(frame.payload.slice(4).trim(), { state: stateName, code: "compile" });
+      try {
+        for (;;) {
+          const left = deadline - Date.now();
+          if (left <= 0) throw new LuaError(`Lua in ${stateName} timed out after ${timeoutMs} ms`, { state: stateName });
+          const frame = await this.#next(left);
+          if (!frame) continue;
+          if (frame.payload.startsWith("ERR:")) {
+            throw new LuaError(frame.payload.slice(4).trim(), { state: stateName, code: "compile" });
+          }
+          const out = parseOutput(frame.payload);
+          if (!out) continue;
+          const text = out.text;
+          if (text === end || text.endsWith(end)) break;
+          const ei = text.indexOf(errTag);
+          if (ei >= 0) throw new LuaError(shortLuaError(text.slice(ei + errTag.length)), { state: stateName, code: "runtime" });
+          const ti = text.indexOf(tag);
+          if (ti >= 0) lines.push(text.slice(ti + tag.length));
         }
-        const out = parseOutput(frame.payload);
-        if (!out) continue;
-        const text = out.text;
-        if (text === end || text.endsWith(end)) break;
-        const ei = text.indexOf(errTag);
-        if (ei >= 0) throw new LuaError(shortLuaError(text.slice(ei + errTag.length)), { state: stateName, code: "runtime" });
-        const ti = text.indexOf(tag);
-        if (ti >= 0) lines.push(text.slice(ti + tag.length));
+      } catch (err) {
+        this.trace?.({ phase: "error", id: n, pid: process.pid, ms: Date.now() - started, error: err.message });
+        throw err;
       }
+      this.trace?.({ phase: "end", id: n, pid: process.pid, ms: Date.now() - started, lines: lines.length });
       return lines;
-    });
+    }
   }
 }

@@ -16,6 +16,7 @@ import { ask, makeClient, DEFAULT_MODEL } from "./lib/agent.mjs";
 import { performAction } from "./lib/actions.mjs";
 import { runTool, allTools } from "./lib/tools.mjs";
 import { empireSummary } from "./lib/solvers.mjs";
+import { unfinished } from "./lib/inflight.mjs";
 
 const PORT = Number(process.env.AICIV_PORT || 8737);
 const POLL_MS = Number(process.env.AICIV_POLL_MS || 500);
@@ -129,6 +130,16 @@ async function pollPanel() {
   }
 }
 
+// When the game connection drops, say what was running at that moment: if
+// the game crashed, one of these calls is the likely cause.
+game.tuner.on("close", () => {
+  const open = unfinished(undefined, { sinceMs: 120000 });
+  if (!open.length) return log("tuner connection closed");
+  log(`tuner connection closed with ${open.length} call(s) in flight - if the game crashed, look here first:`);
+  for (const e of open) log(`  ${e.at} ${e.state} ${e.label || ""}: ${String(e.body || "").slice(0, 300).replace(/\s+/g, " ")}`);
+  memory.record({ type: "connection-lost", inFlight: open.map((e) => ({ at: e.at, state: e.state, label: e.label, body: e.body })) });
+});
+
 async function connectLoop() {
   for (;;) {
     if (!game.connected) {
@@ -175,6 +186,7 @@ const routes = {
   "GET /states": async () => game.states(),
   "GET /tools": async () => allTools(memory).map((t) => ({ name: t.name, description: t.description })),
   "GET /journal": async () => memory.recentJournal(50),
+  "GET /inflight": async () => unfinished(undefined, { limit: 20 }),
   "POST /ask": async (b) => answer(b.source || "http", b.question),
   "POST /lua": async (b) => {
     stale = true;

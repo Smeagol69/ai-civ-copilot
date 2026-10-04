@@ -12,7 +12,7 @@ code, its comments, or this file.
   the owner explicitly asks.** The owner's standing rule; it covers the other
   agent's work as much as your own.
 - Branch by author: `claude/<task>`, `codex/<task>`. `master` is integration.
-- Run `cd companion; npm test` before you commit (45 tests as of 2026-10-03).
+- Run `cd companion; npm test` before you commit (51 tests as of 2026-10-04).
 - Every change gets its own commit with the reasoning in the message.
 - Finish with a handoff: what changed, what was verified live, what is open.
 
@@ -105,6 +105,34 @@ they are what the copilot taught itself, and the next agent inherits them.
 - The mod's `AddUserInterfaces` and `ImportFiles` components apply on load
   (see `Modding.log`).
 
+## The 2026-10-04 crash - read this before touching a live game
+
+A test workflow ran 13 agents against the owner's live game at once, each with
+its own tuner connection. Under that load `LSQ:` intermittently returned an
+empty state list, and about ten minutes in the game died with
+`EXCEPTION_ACCESS_VIOLATION` (no crash dump, no Lua error). The call in flight
+with no reply was a discovery probe doing
+`RiverManager.GetRiverByIndex(_ - 1, 'plots')` with `_` taken from `pairs()`
+over `RiverManager.EnumerateRivers()` - an index the engine never promised was
+valid. Native functions do not bounds-check. Nothing was lost: no save had
+happened since the load, so every test edit died with the process.
+
+What changed because of it:
+
+- **One caller at a time, machine-wide.** `TunerLock` (a lock file in the temp
+  dir, per tuner port) wraps every handshake and command in every process.
+  Dead or overrunning holders are evicted.
+- **Write-ahead in-flight log.** Every call is recorded in
+  `companion/data/inflight.jsonl` before it is sent and closed out when it
+  finishes. After a crash, `node cli/civ.mjs inflight` lists exactly what was
+  running; the bridge logs it when the connection drops.
+- **The model is told** that bad native calls crash the game (system prompt
+  rule 8), and the seeded `knowledge.md` records this incident.
+- **Testing policy:** never fan out agents that all talk to the owner's live
+  game. Game access goes through one agent at a time (the lock now enforces it
+  anyway); parallel agents may only do offline work (code, shipped scripts,
+  saved catalogs).
+
 ## Traps that already cost time
 
 - **The tuner port moves.** After loading a save from the main menu the game
@@ -129,6 +157,20 @@ they are what the copilot taught itself, and the next agent inherits them.
   `(unit, hash, false)`.
 - **`Keys.A` is never referenced by shipped scripts**, so the panel compares
   against `(Keys.A or 65)`.
+- **Research/civic choice can wipe the player's plan.** `VALUE_EXCLUSIVE`
+  replaces the whole queue (a test erased a 7-civic queue). `set_research` /
+  `set_civic` now send the game's own path (`GetResearchPath`/`GetCivicPath`, so
+  far targets work) with `mode` front (default: target now, old queue after),
+  replace (a click) or append (shift-click).
+- **Read-backs race the game.** A single read 450 ms after a request sometimes
+  missed a change that landed a moment later; play actions now re-read up to 4
+  times (350/500/800/1200 ms).
+- **No `_G`.** Havok Script 2013.2 has no `_G`, `getfenv`, `rawget`, `debug`,
+  `require`, `io` (`loadstring` and `os` exist). `scan_api` harvests names from
+  the shipped scripts and resolves each with `loadstring`.
+- **Every emitted line is also written to `Lua.log`.** A snapshot adds ~20 KB.
+- **The game speed lives in `GameConfiguration`.** `Game.GetGameSpeedType` does
+  not exist in InGame; unit activity is an `ActivityTypes` enum value.
 
 ## Layout
 
@@ -160,6 +202,8 @@ they are what the copilot taught itself, and the next agent inherits them.
 - The hex-distance helper in `solvers.mjs` assumes an odd-row offset layout and
   is used only for ranking; verify against `Map.GetPlotDistance` and fix if
   needed.
-- `make_peace` uses `GetDiplomacy():MakePeaceWith`, which is not in the shipped
-  scripts; it will report the game's error if the name is wrong. Discover the
-  real call (`inspect_api` on `Players[me]:GetDiplomacy()`) and fix it.
+- `make_peace`: `MakePeaceWith` was confirmed to exist on GameCore
+  `Players[id]:GetDiplomacy()` by the live catalog; its argument shape (just the
+  other player id?) is still unverified - check shipped scripts before using it.
+- The full live test of play/edit actions and the expansion phase were cut short
+  by the crash; rerun them one agent at a time.

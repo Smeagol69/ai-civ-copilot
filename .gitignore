@@ -3,3 +3,5 @@ node_modules/
 # what the copilot has taught itself, and the next agent should inherit them.
 companion/data/journal.jsonl
 companion/data/api-catalog/
+companion/data/inflight.jsonl
+companion/data/inflight.jsonl.1

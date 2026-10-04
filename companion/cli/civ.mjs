@@ -10,6 +10,7 @@
 //   node cli/civ.mjs tool inspect_api '{"state":"InGame","expression":"UnitManager"}'
 //   node cli/civ.mjs states | summary | journal | tools
 //   node cli/civ.mjs scan GameCore_Tuner        (saves the API catalog)
+//   node cli/civ.mjs inflight [n]               (calls that never finished)
 
 import fs from "node:fs";
 import { Game } from "../lib/game.mjs";
@@ -17,6 +18,7 @@ import { Memory } from "../lib/memory.mjs";
 import { GameFiles } from "../lib/gamefiles.mjs";
 import { performAction } from "../lib/actions.mjs";
 import { runTool } from "../lib/tools.mjs";
+import { unfinished } from "../lib/inflight.mjs";
 
 const BASE = `http://127.0.0.1:${process.env.AICIV_PORT || 8737}`;
 const argv = process.argv.slice(2);
@@ -42,9 +44,10 @@ function readCode(parts) {
   return parts.join(" ");
 }
 
+// Connects lazily: tools that only read local data (search_api, abilities,
+// game scripts) work with the game closed.
 async function directCtx() {
   const game = new Game();
-  await game.ensureConnected();
   const memory = new Memory();
   let snap = null;
   return {
@@ -58,6 +61,9 @@ async function directCtx() {
 
 async function main() {
   switch (cmd) {
+    case "inflight":
+      // Calls that started and never finished - after a crash, the suspects.
+      return print(unfinished(undefined, { limit: Number(rest[0] || 10) }));
     case "status":
       return print(await http("GET", "/status"));
     case "summary":
@@ -120,7 +126,7 @@ async function main() {
       return print((await http("POST", "/tool", { name: "scan_api", input: { state } })).content);
     }
     default:
-      console.log("usage: civ.mjs <status|summary|journal|tools|ask|states|lua|action|tool|scan> [...] [--direct]");
+      console.log("usage: civ.mjs <status|summary|journal|tools|ask|states|lua|action|tool|scan|inflight> [...] [--direct]");
   }
 }
 

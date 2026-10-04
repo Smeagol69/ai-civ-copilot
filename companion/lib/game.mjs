@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TunerClient } from "./tuner.mjs";
+import { inflightTracer } from "./inflight.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const LUA_DIR = path.join(HERE, "..", "lua");
@@ -81,8 +82,10 @@ export function buildScript(body, params = {}) {
 }
 
 export class Game {
-  constructor({ tuner, host, port, log = () => {} } = {}) {
-    this.tuner = tuner || new TunerClient({ host, port, log });
+  // trace: false disables the in-flight log (tests do, via NODE_TEST_CONTEXT).
+  constructor({ tuner, host, port, log = () => {}, trace } = {}) {
+    const tracer = trace === false || (trace === undefined && process.env.NODE_TEST_CONTEXT) ? undefined : trace || inflightTracer();
+    this.tuner = tuner || new TunerClient({ host, port, log, trace: tracer });
     this.log = log;
   }
 
@@ -102,7 +105,7 @@ export class Game {
   // Run a named script from lua/ with params; returns decoded JSON.
   async script(name, params = {}, { state = UI_STATE, timeoutMs } = {}) {
     await this.ensureConnected();
-    const lines = await this.tuner.exec(state, buildScript(loadLua(name), params), { timeoutMs });
+    const lines = await this.tuner.exec(state, buildScript(loadLua(name), params), { timeoutMs, label: `script:${name}` });
     return decodeLines(lines).value;
   }
 
@@ -110,7 +113,7 @@ export class Game {
   // J.encode), so callers can return structured data with emitJson(...).
   async lua(state, code, { params = {}, timeoutMs } = {}) {
     await this.ensureConnected();
-    const lines = await this.tuner.exec(state, buildScript(code, params), { timeoutMs });
+    const lines = await this.tuner.exec(state, buildScript(code, params), { timeoutMs, label: "lua" });
     return decodeLines(lines);
   }
 
