@@ -236,9 +236,18 @@ export const HANDLERS = {
   },
   recent: {
     run: async (ctx) => {
-      const recent = ctx.memory.recentJournal(10).filter((e) => e.type !== "question");
+      const recent = ctx.memory.recentJournal(40).filter((e) => e.type === "action" || e.type === "ability" || e.type === "lua").slice(-10);
       if (!recent.length) return { text: "The copilot has not changed anything yet." };
-      return { text: recent.map((e) => `- ${e.at.slice(11, 16)} ${e.action || e.name || e.type}${e.ok === false ? " (not done)" : ""}`).join("\n") };
+      const describe = (e) => {
+        if (e.type === "action") {
+          const a = Object.entries(e.args || {}).map(([k, v]) => `${k} ${v}`).join(", ");
+          return `${pretty(e.action)}${a ? ` (${a})` : ""}`;
+        }
+        if (e.type === "ability") return `ability ${pretty(e.name)}`;
+        const first = String(e.code || "").split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("--")) || "";
+        return `Lua in ${e.state}: ${first.slice(0, 60)}`;
+      };
+      return { text: recent.map((e) => `- ${e.at.slice(11, 16)} ${describe(e)}${e.ok === false ? " - not done" : ""}`).join("\n") };
     },
   },
 

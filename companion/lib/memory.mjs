@@ -145,8 +145,13 @@ export class Memory {
   }
 
   // ------------------------------------------------------------ journal
+  // `at` is the journal's timestamp; a result's own `at` (spawn_unit's
+  // position) is kept as `position` instead of overwriting it.
   record(entry) {
-    fs.appendFileSync(this.journalFile, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n");
+    const { at, ...rest } = entry;
+    const row = { at: new Date().toISOString(), ...rest };
+    if (at !== undefined) row.position = at;
+    fs.appendFileSync(this.journalFile, JSON.stringify(row) + "\n");
   }
 
   recentJournal(n = 20) {

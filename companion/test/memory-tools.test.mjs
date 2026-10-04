@@ -129,3 +129,11 @@ test("solver tools read the snapshot", async () => {
   const city = JSON.parse((await runTool(ctx, "get_city", { cityId: 999 })).content);
   assert.match(city.error, /no city 999/);
 });
+
+test("a result's own `at` never overwrites the journal timestamp", () => {
+  const memory = tmpMemory();
+  memory.record({ type: "action", action: "spawn_unit", at: [10, 31] });
+  const e = memory.recentJournal(1)[0];
+  assert.match(e.at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(e.position, [10, 31]);
+});
