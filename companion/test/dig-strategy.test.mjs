@@ -113,3 +113,8 @@ test("history records one row per turn and gives per-turn trends", () => {
   assert.equal(t.perTurn.Hungary.score, 5);
   assert.equal(t.perTurn.Georgia.techs, 0.5);
 });
+
+test("a road where everyone is at zero reads as 'nobody has any yet'", () => {
+  const s = { ...STANDING, players: STANDING.players.map((p) => (p.known ? { ...p, capitalsHeld: 0 } : p)) };
+  assert.match(formatStanding(analyzeStanding(s)), /Domination: nobody has any yet/);
+});

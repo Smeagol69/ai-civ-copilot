@@ -67,6 +67,11 @@ export function formatStanding(a) {
   if (a.error) return `Standing unavailable: ${a.error}`;
   const lines = [`Victory standing, turn ${a.turn} (${a.civ}):`];
   for (const r of a.roads) {
+    // Everyone at zero is not a race anyone leads (e.g. no capital taken yet).
+    if (!r.leaderValue) {
+      lines.push(`- ${r.label}: nobody has any yet`);
+      continue;
+    }
     lines.push(`- ${r.label}: you ${r.mine ?? "?"} (${r.rank ? `#${r.rank} of ${r.of}` : "unranked"}), leader ${r.leader} ${r.leaderValue}${r.share !== null ? `, you have ${r.share}% of the leader` : ""}`);
   }
   if (a.bestRoad) lines.push(`Strongest road (calculated): ${a.bestRoad.label}, rank ${a.bestRoad.rank}.`);
