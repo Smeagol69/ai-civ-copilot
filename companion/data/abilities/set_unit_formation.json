@@ -1,0 +1,42 @@
+{
+  "name": "set_unit_formation",
+  "description": "Set a military unit's formation directly: STANDARD, CORPS (+10 combat) or ARMY (+20 combat), bypassing the normal corps/army requirements (Nationalism/Mobilization civics, merging two units). Params: unitId (required), formation (\"STANDARD\"|\"CORPS\"|\"ARMY\", required), playerId (default local player). Returns formation and combat strength before/after. Runs in GameCore_Tuner via Unit:SetMilitaryFormation (Firaxis Debug/Unit.ltp 'Form Army').",
+  "state": "GameCore_Tuner",
+  "kind": "edit",
+  "properties": {
+    "unitId": {
+      "type": "integer",
+      "description": "unit id"
+    },
+    "formation": {
+      "type": "string",
+      "enum": [
+        "STANDARD",
+        "CORPS",
+        "ARMY"
+      ],
+      "description": "target formation"
+    },
+    "playerId": {
+      "type": "integer",
+      "description": "owner player id (default local player)"
+    }
+  },
+  "required": [
+    "unitId",
+    "formation"
+  ],
+  "lua": "local pid = P.playerId\nif pid == nil then pid = Game.GetLocalPlayer() end\nlocal alive = false\nfor _, id in ipairs(PlayerManager.GetAliveIDs()) do if id == pid then alive = true end end\nif not alive then emitJson({ok=false, error=\"player \"..tostring(pid)..\" is not alive\"}) return end\nlocal u = Players[pid]:GetUnits():FindID(P.unitId)\nif u == nil then emitJson({ok=false, error=\"unit \"..tostring(P.unitId)..\" not found for player \"..pid}) return end\nlocal map = { STANDARD = MilitaryFormationTypes.STANDARD_FORMATION, CORPS = MilitaryFormationTypes.CORPS_FORMATION, ARMY = MilitaryFormationTypes.ARMY_FORMATION }\nlocal target = map[P.formation]\nif target == nil then emitJson({ok=false, error=\"formation must be STANDARD, CORPS or ARMY\"}) return end\nlocal names = {[0]=\"STANDARD\",[1]=\"CORPS\",[2]=\"ARMY\"}\nlocal before = { formation = names[u:GetMilitaryFormation()] or u:GetMilitaryFormation(), combat = u:GetCombat() }\nu:SetMilitaryFormation(target)\nlocal after = { formation = names[u:GetMilitaryFormation()] or u:GetMilitaryFormation(), combat = u:GetCombat() }\nemitJson({ok=true, unitId=P.unitId, unitType=GameInfo.Units[u:GetType()].UnitType, before=before, after=after})",
+  "tested": {
+    "at": "2026-10-04T23:35:22.498Z",
+    "params": {
+      "unitId": 2162688,
+      "formation": "ARMY"
+    },
+    "result": "{\"value\":{\"before\":{\"combat\":67,\"formation\":\"ARMY\"},\"unitType\":\"UNIT_KNIGHT\",\"after\":{\"combat\":67,\"formation\":\"ARMY\"},\"unitId\":2162688,\"ok\":true},\"text\":[]}"
+  },
+  "createdAt": "2026-10-04T23:35:22.498Z",
+  "updatedAt": "2026-10-04T23:35:22.498Z",
+  "uses": 0,
+  "history": []
+}

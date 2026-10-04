@@ -158,7 +158,7 @@ async function handlePanel(q) {
   if (AI_PROMPTS[key]) {
     aiQueue.push({
       id: q.id,
-      refreshAbilities: key === "explore_ai",
+      refreshAbilities: ["explore_ai", "dig_ai", "dig3_ai"].includes(key),
       run: async (onProgress) => {
         const res = await handlePanelRequest(makeCtx(onProgress), q, { ask: (question) => answer("panel", question, onProgress) });
         return res.text;

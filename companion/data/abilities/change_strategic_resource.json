@@ -1,0 +1,37 @@
+{
+  "name": "change_strategic_resource",
+  "description": "Add or remove units of a stockpiled strategic resource (Iron, Horses, Niter, Coal, Oil, Aluminum, Uranium) for a player via Player:GetResources():ChangeResourceAmount in GameCore_Tuner (Firaxis Debug/Player.ltp '+10 Iron'). Params: resource (RESOURCE_* type, required), amount (required; negative to remove), playerId (default local player). Returns before/after stockpile from GetResourceAmount. Note: the stockpile cap still applies at turn processing.",
+  "state": "GameCore_Tuner",
+  "kind": "edit",
+  "properties": {
+    "resource": {
+      "type": "string",
+      "description": "RESOURCE_* type, e.g. RESOURCE_IRON"
+    },
+    "amount": {
+      "type": "number",
+      "description": "change (negative removes)"
+    },
+    "playerId": {
+      "type": "integer",
+      "description": "player id (default local player)"
+    }
+  },
+  "required": [
+    "resource",
+    "amount"
+  ],
+  "lua": "local pid = P.playerId\nif pid == nil then pid = Game.GetLocalPlayer() end\nlocal alive = false\nfor _, id in ipairs(PlayerManager.GetAliveIDs()) do if id == pid then alive = true end end\nif not alive then emitJson({ok=false, error=\"player \"..tostring(pid)..\" is not alive\"}) return end\nlocal info = GameInfo.Resources[P.resource]\nif info == nil then emitJson({ok=false, error=\"unknown resource \"..tostring(P.resource)}) return end\nlocal amt = tonumber(P.amount)\nif amt == nil then emitJson({ok=false, error=\"amount must be a number\"}) return end\nlocal r = Players[pid]:GetResources()\nlocal before = r:GetResourceAmount(info.Index)\nr:ChangeResourceAmount(info.Index, amt)\nlocal after = r:GetResourceAmount(info.Index)\nemitJson({ok=true, playerId=pid, resource=info.ResourceType, resourceClass=info.ResourceClassType, before=before, after=after})",
+  "tested": {
+    "at": "2026-10-04T23:35:22.516Z",
+    "params": {
+      "resource": "RESOURCE_IRON",
+      "amount": 0
+    },
+    "result": "{\"value\":{\"resourceClass\":\"RESOURCECLASS_STRATEGIC\",\"playerId\":0,\"before\":16,\"after\":16,\"resource\":\"RESOURCE_IRON\",\"ok\":true},\"text\":[]}"
+  },
+  "createdAt": "2026-10-04T23:35:22.517Z",
+  "updatedAt": "2026-10-04T23:35:22.517Z",
+  "uses": 0,
+  "history": []
+}
