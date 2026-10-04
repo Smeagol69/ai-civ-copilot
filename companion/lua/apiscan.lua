@@ -19,7 +19,7 @@ local function methodsOf(v)
   while type(mt) == 'table' and depth < 6 do
     depth = depth + 1
     pcall(collect, mt)
-    local idx = rawget(mt, '__index')
+    local idx = mt.__index
     if type(idx) == 'table' then
       pcall(collect, idx)
       local nmt = nil
@@ -33,16 +33,26 @@ local function methodsOf(v)
   return names
 end
 
-local R = { globals = {}, objects = {}, enums = {} }
+local R = { globals = {}, objects = {}, enums = {}, missing = 0 }
 
--- Globals: tables get their function members listed; enum-like tables
--- (all number values) are listed as enums with their values.
-for k, v in pairs(_G) do
-  local key = tostring(k)
+-- Havok Script exposes no _G, getfenv or rawget, so the global table cannot
+-- be walked. The bridge passes candidate names harvested from Firaxis' own
+-- scripts (P.candidates); each is resolved here with loadstring, which runs
+-- in this state's global environment. Tables get their function members
+-- listed; enum-like tables (all number values) are listed with values.
+for _, key in ipairs(P.candidates or {}) do
+  local v = nil
+  local f = loadstring('return ' .. key)
+  if f then
+    local ok, res = pcall(f)
+    if ok then v = res end
+  end
   local tv = type(v)
-  if tv == 'function' then
+  if v == nil then
+    R.missing = R.missing + 1
+  elseif tv == 'function' then
     R.globals[key] = 'function'
-  elseif tv == 'table' and key ~= '_G' and key ~= 'GameInfo' and key ~= 'Controls' and key ~= 'ExposedMembers' then
+  elseif tv == 'table' and key ~= 'GameInfo' and key ~= 'Controls' and key ~= 'ExposedMembers' then
     local fns, nums, other = {}, {}, 0
     pcall(function()
       for k2, v2 in pairs(v) do
@@ -51,6 +61,11 @@ for k, v in pairs(_G) do
         else other = other + 1 end
       end
     end)
+    for _, m in ipairs(methodsOf(v)) do
+      local dup = false
+      for _, f2 in ipairs(fns) do if f2 == m then dup = true; break end end
+      if not dup then fns[#fns + 1] = m end
+    end
     table.sort(fns)
     if #fns > 0 then R.globals[key] = fns
     elseif next(nums) ~= nil and other == 0 then R.enums[key] = nums
@@ -100,12 +115,12 @@ if me and me >= 0 and Players then
   sample('Eras', function() return Game.GetEras() end)
 end
 
--- GameInfo tables (the full database: units, buildings, techs, modifiers...).
-pcall(function()
-  local tables = {}
-  for k, _ in pairs(GameInfo) do tables[#tables + 1] = tostring(k) end
-  table.sort(tables)
-  R.gameInfoTables = tables
-end)
+-- GameInfo tables (the full database). GameInfo is not enumerable either;
+-- check each table name the shipped scripts use (P.gameInfoCandidates).
+R.gameInfoTables = {}
+for _, t in ipairs(P.gameInfoCandidates or {}) do
+  local ok, v = pcall(function() return GameInfo[t] end)
+  if ok and v ~= nil then R.gameInfoTables[#R.gameInfoTables + 1] = t end
+end
 
 emitJson(R)

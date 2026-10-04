@@ -128,7 +128,7 @@ export class Game {
     return value;
   }
 
-  async apiScan(state) {
-    return this.script("apiscan", {}, { state, timeoutMs: 60000 });
+  async apiScan(state, candidates = [], gameInfoCandidates = []) {
+    return this.script("apiscan", { candidates, gameInfoCandidates }, { state, timeoutMs: 120000 });
   }
 }

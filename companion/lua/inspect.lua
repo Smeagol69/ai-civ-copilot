@@ -40,7 +40,7 @@ local function describe(v, maxKeys)
     while type(mt) == 'table' and depth < 6 do
       depth = depth + 1
       pcall(collect, mt, 'meta' .. depth)
-      local idx = rawget(mt, '__index')
+      local idx = mt.__index
       if type(idx) == 'table' then
         pcall(collect, idx, 'index' .. depth)
         local nmt = nil

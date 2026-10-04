@@ -81,6 +81,37 @@ export class GameFiles {
     return { total, shown: hits.length, hits };
   }
 
+  // Every capitalised name the shipped Lua uses as Name.x or Name:x. The
+  // engine exposes no _G, so this list is how scan_api finds the globals.
+  globalCandidates() {
+    if (!this.candidates) {
+      const names = new Set(["Game", "GameInfo", "Players", "PlayersVisibility", "PlayerConfigurations", "Map", "UnitManager", "CityManager", "UI", "Locale", "Events", "LuaEvents", "GameEvents"]);
+      const re = /(?<![\w.:])([A-Z][A-Za-z0-9_]{1,60})\s*[.:]\s*[A-Za-z_]/g;
+      for (const f of this.list()) {
+        if (!f.toLowerCase().endsWith(".lua")) continue;
+        for (const line of this.#read(f)) {
+          if (line.trimStart().startsWith("--")) continue;
+          for (const m of line.matchAll(re)) names.add(m[1]);
+        }
+      }
+      this.candidates = [...names].sort();
+    }
+    return this.candidates;
+  }
+
+  // Every GameInfo.<Table> name the shipped Lua references.
+  gameInfoCandidates() {
+    if (!this.giCandidates) {
+      const names = new Set();
+      for (const f of this.list()) {
+        if (!f.toLowerCase().endsWith(".lua")) continue;
+        for (const line of this.#read(f)) for (const m of line.matchAll(/GameInfo\.([A-Za-z_][A-Za-z0-9_]*)/g)) names.add(m[1]);
+      }
+      this.giCandidates = [...names].sort();
+    }
+    return this.giCandidates;
+  }
+
   read(relPath, { from = 1, count = 120 } = {}) {
     const full = path.resolve(this.gameDir, relPath);
     if (!full.startsWith(path.resolve(this.gameDir))) return { error: "path escapes the game directory" };

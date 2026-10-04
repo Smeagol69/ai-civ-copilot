@@ -95,7 +95,7 @@ export const STATIC_TOOLS = [
   },
   {
     name: "inspect_api",
-    description: "List every method and field a live value exposes, walking its metatables. expression is any Lua expression valid in that state, e.g. Players[Game.GetLocalPlayer()]:GetCulture(), UnitManager, Map.GetPlot(10,10), _G.",
+    description: "List every method and field a live value exposes, walking its metatables. expression is any Lua expression valid in that state, e.g. Players[Game.GetLocalPlayer()]:GetCulture(), UnitManager, Map.GetPlot(10,10). (Havok Script has no _G, getfenv, rawget or debug; use search_api to find global names.)",
     input_schema: obj({ state: S("Lua state name"), expression: S("Lua expression") }, ["state", "expression"]),
   },
   {
@@ -238,11 +238,14 @@ export async function dispatchTool(ctx, name, input = {}) {
       return game.inspect(input.state, input.expression);
     case "scan_api": {
       ctx.onProgress?.(`Scanning the ${input.state} API`);
-      const cat = await game.apiScan(input.state);
+      const candidates = files?.available?.() ? files.globalCandidates() : [];
+      const giCandidates = files?.available?.() ? files.gameInfoCandidates() : [];
+      const cat = await game.apiScan(input.state, candidates, giCandidates);
       if (!cat) return { ok: false, error: "scan returned nothing" };
       const file = memory.saveCatalog(input.state, cat);
       return {
         ok: true, savedTo: file,
+        candidatesChecked: candidates.length,
         globals: Object.keys(cat.globals || {}).length,
         globalFunctionTables: Object.values(cat.globals || {}).filter(Array.isArray).length,
         objects: Object.fromEntries(Object.entries(cat.objects || {}).map(([k, v]) => [k, v.length])),
