@@ -12,7 +12,7 @@ code, its comments, or this file.
   the owner explicitly asks.** The owner's standing rule; it covers the other
   agent's work as much as your own.
 - Branch by author: `claude/<task>`, `codex/<task>`. `master` is integration.
-- Run `cd companion; npm test` before you commit (51 tests as of 2026-10-04).
+- Run `cd companion; npm test` before you commit (64 tests as of 2026-10-04).
 - Every change gets its own commit with the reasoning in the message.
 - Finish with a handoff: what changed, what was verified live, what is open.
 
@@ -34,8 +34,11 @@ bridge (companion/server.mjs)
 in-game panel (mod/AICivCopilot): Ctrl+Shift+A or the "AI" button
   outbox: ExposedMembers.AICivCopilot.outbox  (bridge polls it)
   replies: LuaEvents.AICivCopilot_Reply(id, kind, text)
-HTTP 127.0.0.1:8737: /status /snapshot /summary /states /ask /lua /action /tool /say /journal
-CLI: node companion/cli/civ.mjs ... (add --direct to skip the bridge)
+HTTP 127.0.0.1:8737: /status /snapshot /summary /states /ask /lua /action /tool /say /journal /inflight
+CLI: node companion/cli/civ.mjs ... (--direct talks to the game itself, but goes
+     through the bridge when one is running; --no-bridge forces a direct link)
+Mutex: every process holds 127.0.0.1:47318 (AICIV_LOCK_PORT) while it talks
+       to the game - the OS frees it the moment a holder dies
 ```
 
 Civ VI's Lua has no sockets and no file I/O. The FireTuner debug socket is the
@@ -55,7 +58,10 @@ a mailbox. All capture and action logic is Lua the bridge injects, which means
    after the game's own `CanStart*` check, then a `verify_<action>` reads the
    world back (requests are asynchronous). EDIT actions return the game's own
    before/after.
-4. **Never guess an engine API into a write.** Look it up first: the shipped
+4. **Never guess an engine API - or its argument shape - into any call.**
+   Native functions do not validate arguments; a wrong shape or an
+   out-of-range index crashes the game (see the 2026-10-04 crash below).
+   Look it up first: the shipped
    Lua under `D:\SteamLibrary\steamapps\common\Sid Meier's Civilization VI\Base\Assets\UI`
    (and `DLC\*`) is the reference - grep it (`search_game_scripts` does this
    for the model). Then probe read-only with `run_lua`, then write.
@@ -117,21 +123,50 @@ over `RiverManager.EnumerateRivers()` - an index the engine never promised was
 valid. Native functions do not bounds-check. Nothing was lost: no save had
 happened since the load, so every test edit died with the process.
 
-What changed because of it:
+What changed because of it (and because of the offline review that
+followed, which reproduced flaws in the first fixes):
 
-- **One caller at a time, machine-wide.** `TunerLock` (a lock file in the temp
-  dir, per tuner port) wraps every handshake and command in every process.
-  Dead or overrunning holders are evicted.
+- **One caller at a time, machine-wide.** `TunerMutex` binds a fixed localhost
+  port (47318, `AICIV_LOCK_PORT`) for every handshake and command in every
+  process. Binding is exclusive and the OS releases it the instant a holder
+  exits or is killed, so there is no stale-lock logic. (A lock file came first;
+  a reviewer reproduced two holders at once. Named pipes are refused with
+  EACCES in this environment.)
+- **Calls settle honestly.** A dropped connection wakes the running call at
+  once (code `lost`). A slow call keeps the lock until the game finishes it or
+  a grace period passes; then the connection is reset, because its stray reply
+  would otherwise be read as the next call's (code `timeout`, outcome
+  `unknown`). Actions never retry on either.
 - **Write-ahead in-flight log.** Every call is recorded in
-  `companion/data/inflight.jsonl` before it is sent and closed out when it
-  finishes. After a crash, `node cli/civ.mjs inflight` lists exactly what was
-  running; the bridge logs it when the connection drops.
+  `companion/data/inflight.jsonl` before it is sent and settled afterwards.
+  After a crash, `node cli/civ.mjs inflight` lists the suspects - calls lost,
+  unsettled, or with unknown outcome - with their age and whether their
+  process is alive; the bridge logs them when the connection drops.
+- **Handshake replies skip print frames.** Taking any frame as the LSQ reply
+  turned the state list into `[]` whenever another script's print landed
+  first - the likely client-side cause of crash day's "States: (none)".
 - **The model is told** that bad native calls crash the game (system prompt
   rule 8), and the seeded `knowledge.md` records this incident.
 - **Testing policy:** never fan out agents that all talk to the owner's live
   game. Game access goes through one agent at a time (the lock now enforces it
   anyway); parallel agents may only do offline work (code, shipped scripts,
   saved catalogs).
+
+## How actions are kept honest
+
+- Each play action returns `verifyArgs`; `performAction` hands them to its
+  `verify_<action>`, which must check the specific change (the target is the
+  current research, the purchase spent the yield and the unit appeared, the
+  turn number moved), not merely that something plausible is present.
+- `test/actions-api.test.mjs` checks every engine call in every action
+  against the live API catalog of the Lua state that action runs in
+  (`companion/data/api-catalog/*.json`, tracked in git). It caught
+  `BuildQueue:GetSize`, `TeamTypes` and `GetCulturalProgress`, none of which
+  exist in GameCore. Re-run `node cli/civ.mjs scan <State>` after a game patch.
+- Production, research and civics never wipe the player's queue by default:
+  production uses `VALUE_REPLACE_AT 0` (a click), research/civics `mode front`.
+- War-starting attacks are refused unless `allowWar`; `make_peace` needs
+  `experimental` (no Firaxis call shape exists to copy).
 
 ## Traps that already cost time
 
@@ -171,6 +206,18 @@ What changed because of it:
 - **Every emitted line is also written to `Lua.log`.** A snapshot adds ~20 KB.
 - **The game speed lives in `GameConfiguration`.** `Game.GetGameSpeedType` does
   not exist in InGame; unit activity is an `ActivityTypes` enum value.
+- **The same function can take different arguments in each state.**
+  `Map.GetUnitsAt` takes a plot in GameCore and x,y in InGame;
+  `Units.GetUnitsInPlotLayerID` takes (x, y, layer) or (plot, layer). Copy the
+  shape from a script that runs in the same state.
+- **The map wraps east-west.** Distances must wrap (`hexDistance(..., width)`,
+  odd-r layout, tested against 35 live `Map.GetPlotDistance` pairs). Walk tile
+  discs with `Map.GetPlotXYWithRangeCheck`; never pass off-map coordinates to
+  `Map.GetPlot`.
+- **GameCore and InGame report different yields.** GameCore's
+  `Plot:GetYield` leaves out improvements and districts; read tiles in InGame.
+- **Git Bash eats a backslash** in doubled-backslash JSON arguments; pass JSON
+  from a file.
 
 ## Layout
 
@@ -205,5 +252,7 @@ What changed because of it:
 - `make_peace`: `MakePeaceWith` was confirmed to exist on GameCore
   `Players[id]:GetDiplomacy()` by the live catalog; its argument shape (just the
   other player id?) is still unverified - check shipped scripts before using it.
-- The full live test of play/edit actions and the expansion phase were cut short
-  by the crash; rerun them one agent at a time.
+- The hardening in branch `claude/hardening` (tuner mutex, action fixes, read
+  fixes) was unit-tested but not yet exercised live; run the play and edit
+  tests against it one agent at a time.
+- The in-game panel's layout has not been seen on screen.
