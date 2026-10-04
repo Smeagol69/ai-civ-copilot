@@ -5,4 +5,5 @@ node_modules/
 companion/data/journal.jsonl
 companion/data/inflight.jsonl
 companion/data/inflight.jsonl.1
-companion/data/history.jsonl
+companion/data/history*.jsonl
+companion/data/events.jsonl

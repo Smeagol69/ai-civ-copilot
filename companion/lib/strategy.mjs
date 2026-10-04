@@ -87,6 +87,11 @@ export class History {
   record(standing) {
     const last = this.rows(1)[0];
     if (last && last.turn === standing.turn) return false;
+    // Turn numbers went back: a different game. Keep the old history under
+    // its own name and start a fresh one, so trends never mix games.
+    if (last && typeof standing.turn === "number" && standing.turn < last.turn) {
+      fs.renameSync(this.file, this.file.replace(/\.jsonl$/, `-${Date.now()}.jsonl`));
+    }
     const row = {
       turn: standing.turn,
       at: new Date().toISOString(),

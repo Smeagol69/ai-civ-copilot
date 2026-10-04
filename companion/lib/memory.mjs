@@ -16,6 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DiscoveryMap } from "./discovery.mjs";
 import { History } from "./strategy.mjs";
+import { EventLog } from "./events.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_DATA_DIR = process.env.AICIV_DATA_DIR || path.join(HERE, "..", "data");
@@ -39,6 +40,11 @@ export class Memory {
 
   get history() {
     return (this._history ??= new History(this.dir));
+  }
+
+  // Game events the panel records (wars, deals, research, notifications...).
+  get events() {
+    return (this._events ??= new EventLog(this.dir));
   }
 
   // ------------------------------------------------------------ abilities

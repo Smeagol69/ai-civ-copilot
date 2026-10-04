@@ -195,6 +195,35 @@ leverage, Firaxis call sites, and a status that only moves forward
 - Panel: Dig tab (Map the API, Probe getters, Frontier, Dig status, Dig deeper,
   Dig x3), Info > Victory standing, Ask AI > Best strategy.
 
+## Situation awareness (panel v4)
+
+- The panel records game events into `ExposedMembers.AICivCopilot.events`
+  (DiplomacyIncomingDeal, DiplomacyDeclareWar/MakePeace, ResearchCompleted,
+  CivicCompleted, CityAddedToMap, CityProductionCompleted, WonderCompleted,
+  NotificationAdded, LocalPlayerTurnBegin with the end-turn blocker). The
+  bridge drains them every poll into `data/events.jsonl` (gitignored).
+- A deal **offered or demanded** (`DealProposalAction.PROPOSED/DEMANDED`) or
+  war declared **on the player** pops the panel open (without taking keyboard
+  focus) and queues `situation_ai` when Alerts is on. Answers to the player's
+  own proposals are only recorded. The same alert twice in 30 s is one alert.
+- `lua/situation.lua`: wars, every met civ's `DIPLO_STATE_*` and the game's own
+  reasons (`GetDiplomaticModifiers`), military, incoming working deal items,
+  `GetFirstEndTurnBlocking`. Verified live 2026-10-04 (no gaps).
+- Every AI request starts with "Right now" (situation) and "Recent events", so
+  Advise me / any question knows what happened this turn.
+- Info tab: What happened, Diplomacy, and toggles Turn brief (free, default on),
+  AI advisor (asks the AI every turn, default off - it costs), Alerts (default on).
+- Requests stay in `m.taken` until their final reply; a restarted bridge picks
+  up unfinished AI requests and asks the player to re-press unfinished actions.
+  The panel ignores replies to ids it did not send (tests no longer leak in).
+- **Panel injection.** A game started with the mod switched off (mods are per
+  game in setup) has no panel. The bridge then loads it exactly like InGame.lua
+  does: `ContextPtr:LoadNewContext(<installed mod path>/UI/AICivCopilotPanel,
+  Controls.AdditionalUserInterfaces, "AICivCopilotPanel", true)` - only right
+  after a fresh state list confirms it is missing, at most once a minute.
+  Verified live 2026-10-04 (Poland, turn 1). Modding.log shows which mods a game
+  got under "Target Mods".
+
 ## Traps that already cost time
 
 - **The tuner port moves.** After loading a save from the main menu the game
@@ -257,6 +286,8 @@ leverage, Firaxis call sites, and a status that only moves forward
 | `companion/lua/actions.lua` | Every typed action + its read-back |
 | `companion/lua/inspect.lua`, `apiscan.lua` | API discovery |
 | `companion/lua/plots.lua` | Tiles around a point |
+| `companion/lua/situation.lua` | Wars, attitudes and reasons, deals on the table, end-turn blocker |
+| `companion/lib/events.mjs` | Event log (events.jsonl), event and situation formatting |
 | `companion/lib/actions.mjs` | Action catalog: schema, state, play vs edit, read-back flow |
 | `companion/lib/solvers.mjs` | Deterministic answers + the lean payload the model starts with |
 | `companion/lib/tools.mjs` | Tool schemas and dispatch |

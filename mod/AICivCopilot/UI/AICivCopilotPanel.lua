@@ -18,7 +18,7 @@ include("InstanceManager");
 
 local m_LogIM = InstanceManager:new("LogEntry", "Text", Controls.LogStack);
 local m_TabIM = InstanceManager:new("TabButton", "Button", Controls.TabStack);
-local m_NextId = 1;
+local m_NextId = 1;          -- continued from Mailbox.nextId so ids never repeat in a session
 local m_Pending = {};
 local m_Count = 0;
 local MAX_ENTRIES = 120;
@@ -27,7 +27,16 @@ local PER_ROW = 4;
 ExposedMembers.AICivCopilot = ExposedMembers.AICivCopilot or {};
 local Mailbox = ExposedMembers.AICivCopilot;
 Mailbox.outbox = Mailbox.outbox or {};
-Mailbox.version = 3;
+Mailbox.events = Mailbox.events or {};   -- game events for the bridge (drained by its poll)
+Mailbox.version = 4;
+m_NextId = Mailbox.nextId or 1;
+-- Requests the bridge has taken but not finished; a fresh panel (new game or
+-- reload) starts clean so the bridge never re-runs another game's requests.
+Mailbox.taken = {};
+-- Toggles (kept across panel reloads within a session).
+if Mailbox.autoBrief == nil then Mailbox.autoBrief = true; end      -- free turn brief each turn
+if Mailbox.autoAdvise == nil then Mailbox.autoAdvise = false; end   -- AI advice each turn (costs)
+if Mailbox.alerts == nil then Mailbox.alerts = true; end            -- pop up + AI advice on war, deals
 
 -- needs: "city" or "unit" = requires that selection; confirm = click twice.
 local TABS = {
@@ -42,7 +51,11 @@ local TABS = {
 		{ key = "researchqueue", label = "Research queue",  tip = "Current research and civic, and what is queued after them" },
 		{ key = "recent",        label = "Recent changes",  tip = "The last changes the copilot made to the game" },
 		{ key = "standing",      label = "Victory standing", tip = "Where you and every known civ stand on each road to victory" },
-		{ key = "autobrief",     label = "Auto brief: off", localToggle = true, tip = "Post a Turn brief automatically at the start of each of your turns" },
+		{ key = "events",        label = "What happened",   tip = "Events this turn and last: research, cities, wars, deals, notifications" },
+		{ key = "situation",     label = "Diplomacy",       tip = "Wars, deals on the table, and how every civ you have met feels about you and why" },
+		{ key = "autobrief",     label = "Turn brief: on",  localToggle = "autoBrief",  onLabel = "Turn brief: on",  offLabel = "Turn brief: off",  tip = "Free: post a Turn brief at the start of each of your turns" },
+		{ key = "autoadvise",    label = "AI advisor: off", localToggle = "autoAdvise", onLabel = "AI advisor: on", offLabel = "AI advisor: off", tip = "AI: tell me what to do at the start of every turn (uses the AI each turn)" },
+		{ key = "alerts",        label = "Alerts: on",      localToggle = "alerts",     onLabel = "Alerts: on",     offLabel = "Alerts: off",     tip = "Pop up and ask the AI for the best response when war is declared or a deal is offered" },
 	} },
 	{ key = "city", label = "City", buttons = {
 		{ key = "city_details",      label = "City details",     needs = "city", tip = "Everything about the selected city" },
@@ -204,6 +217,7 @@ end
 local function Queue(kind, text, key)
 	local id = m_NextId;
 	m_NextId = m_NextId + 1;
+	Mailbox.nextId = m_NextId;
 	table.insert(Mailbox.outbox, { id = id, kind = kind, text = text, key = key, sel = Selection(), turn = Game.GetCurrentGameTurn() });
 	m_Busy = m_Busy + 1;
 	if m_BridgeOnline then
@@ -217,10 +231,11 @@ end
 
 local function OnButton(entry, button)
 	if entry.localToggle then
-		Mailbox.autoBrief = not Mailbox.autoBrief;
-		entry.label = Mailbox.autoBrief and "Auto brief: on" or "Auto brief: off";
+		local k = entry.localToggle;
+		Mailbox[k] = not Mailbox[k];
+		entry.label = Mailbox[k] and entry.onLabel or entry.offLabel;
 		if button then button:SetText(entry.label); end
-		AddEntry(COLOR_DIM .. (Mailbox.autoBrief and "A Turn brief will be posted at the start of each turn." or "Auto brief is off.") .. "[ENDCOLOR]");
+		AddEntry(COLOR_DIM .. entry.label .. "[ENDCOLOR]");
 		return;
 	end
 	if entry.confirm then
@@ -281,6 +296,7 @@ local function AddRows(list)
 		end
 		local b = {};
 		ContextPtr:BuildInstanceForControl("ActionButton", b, row.Row);
+		if entry.localToggle then entry.label = Mailbox[entry.localToggle] and entry.onLabel or entry.offLabel; end
 		b.Button:SetText(entry.label);
 		b.Button:SetToolTipString(entry.tip or entry.label);
 		b.Button:RegisterCallback(Mouse.eLClick, function() OnButton(entry, b.Button); end);
@@ -329,6 +345,7 @@ local function OnButtons(group, items)
 end
 
 local function OnReply(id, kind, text)
+	if id ~= 0 and kind ~= "hello" and m_Pending[id] == nil then return; end
 	if kind == "hello" then
 		m_Model = tostring(text or "");
 		m_BridgeOnline = true;
@@ -407,11 +424,168 @@ local function OnUpdate(fDeltaTime)
 	end
 end
 
-local function OnTurnBegin()
-	if Mailbox.autoBrief then
-		AddEntry(COLOR_DIM .. "Turn " .. Game.GetCurrentGameTurn() .. "[ENDCOLOR]");
-		Queue("quick", "Turn brief", "turnbrief");
+-- ---------------------------------------------------------------- events
+-- Every game event worth knowing goes to Mailbox.events; the bridge drains
+-- it each poll, so the AI knows what happened this turn. Call shapes are
+-- the shipped handlers' (DiplomacyDealView, NotificationPanel, ...).
+local MAX_EVENTS = 200;
+local function Civ(id)
+	local ok, name = pcall(function() return Locale.Lookup(PlayerConfigurations[id]:GetCivilizationShortDescription()); end);
+	return ok and name or ("player " .. tostring(id));
+end
+local function Record(kind, text, extra)
+	local e = extra or {};
+	e.kind = kind;
+	e.text = text;
+	e.turn = Game.GetCurrentGameTurn();
+	table.insert(Mailbox.events, e);
+	if #Mailbox.events > MAX_EVENTS then table.remove(Mailbox.events, 1); end
+	return e;
+end
+
+-- A situation that needs a decision: show it, open the panel, ask the AI.
+local m_LastAlert = nil;      -- { text, time }: the same alert twice in 30 s is one alert
+local function Alert(text, key)
+	Mailbox.situation = { text = text, turn = Game.GetCurrentGameTurn() };
+	if not Mailbox.alerts then return; end
+	if m_LastAlert and m_LastAlert.text == text and m_Clock - m_LastAlert.time < 30 then return; end
+	m_LastAlert = { text = text, time = m_Clock };
+	if Controls.Panel:IsHidden() then
+		-- Open without taking keyboard focus: the diplomacy screen may be up.
+		Controls.Panel:SetHide(false);
+		Controls.ToggleButton:SetText("AI Copilot");
+		ShowTab(m_Tab);
 	end
+	AddEntry(COLOR_ERR .. "! " .. Escape(text) .. "[ENDCOLOR]");
+	Queue("quick", "Best response", key or "situation_ai");
+end
+
+-- What the deal on the table gives and asks (DiplomacyDealView's reading).
+local function DealText(me, other)
+	local ok, text = pcall(function()
+		local pDeal = DealManager.GetWorkingDeal(DealDirection.INCOMING, me, other);
+		if pDeal == nil then return nil; end
+		local gives, asks = {}, {};
+		for item in pDeal:Items() do
+			local t = item:GetType();
+			local what;
+			if t == DealItemTypes.GOLD then
+				what = (item:GetDuration() > 0) and (item:GetAmount() .. " gold/turn for " .. item:GetDuration() .. " turns") or (item:GetAmount() .. " gold");
+			elseif t == DealItemTypes.RESOURCES then
+				local r = GameInfo.Resources[item:GetValueType()];
+				what = item:GetAmount() .. " " .. (r and Locale.Lookup(r.Name) or "resource") .. ((item:GetDuration() > 0) and (" for " .. item:GetDuration() .. " turns") or "");
+			else
+				local nameId = item:GetValueTypeNameID();
+				what = (nameId and Locale.Lookup(nameId)) or "item";
+			end
+			if item:GetFromPlayerID() == other then gives[#gives + 1] = what; else asks[#asks + 1] = what; end
+		end
+		return Civ(other) .. " offers: " .. (#gives > 0 and table.concat(gives, ", ") or "nothing") .. ". Asks from you: " .. (#asks > 0 and table.concat(asks, ", ") or "nothing") .. ".";
+	end);
+	return ok and text or nil;
+end
+
+local function OnIncomingDeal(eFromPlayer, eToPlayer, eAction)
+	local me = Game.GetLocalPlayer();
+	if eToPlayer ~= me then return; end
+	-- A new offer or a demand needs a decision; answers to the player's own
+	-- proposals (accepted, rejected, counter) are just recorded.
+	local action = "deal update";
+	for k, v in pairs(DealProposalAction) do if v == eAction then action = k; end end
+	local text = DealText(me, eFromPlayer) or (Civ(eFromPlayer) .. " proposes a deal.");
+	if eAction == DealProposalAction.PROPOSED or eAction == DealProposalAction.DEMANDED then
+		if eAction == DealProposalAction.DEMANDED then text = Civ(eFromPlayer) .. " DEMANDS: " .. text; end
+		Record("deal", text, { from = eFromPlayer, action = action });
+		Alert(text, "situation_ai");
+	else
+		Record("deal", Civ(eFromPlayer) .. " (" .. string.lower(action) .. "): " .. text, { from = eFromPlayer, action = action });
+	end
+end
+
+local function OnDeclareWar(p1, p2)
+	local me = Game.GetLocalPlayer();
+	if p2 == me then
+		local text = Civ(p1) .. " declared war on you!";
+		Record("war", text, { from = p1 });
+		Alert(text, "situation_ai");
+	elseif p1 == me then
+		Record("war", "You declared war on " .. Civ(p2) .. ".", { to = p2 });
+	else
+		Record("war", Civ(p1) .. " declared war on " .. Civ(p2) .. ".");
+	end
+end
+
+local function OnMakePeace(p1, p2)
+	local me = Game.GetLocalPlayer();
+	if p1 == me or p2 == me then
+		Record("peace", "Peace with " .. Civ(p1 == me and p2 or p1) .. ".");
+	else
+		Record("peace", Civ(p1) .. " and " .. Civ(p2) .. " made peace.");
+	end
+end
+
+local function OnResearchCompleted(ePlayer, eTech)
+	if ePlayer ~= Game.GetLocalPlayer() then return; end
+	local r = GameInfo.Technologies[eTech];
+	Record("research", "Researched " .. (r and Locale.Lookup(r.Name) or "a technology") .. ".");
+end
+
+local function OnCivicCompleted(ePlayer, eCivic)
+	if ePlayer ~= Game.GetLocalPlayer() then return; end
+	local r = GameInfo.Civics[eCivic];
+	Record("civic", "Completed " .. (r and Locale.Lookup(r.Name) or "a civic") .. ".");
+end
+
+local function OnCityAdded(ownerPlayerID, cityID, cityX, cityY)
+	local me = Game.GetLocalPlayer();
+	local ok, name = pcall(function() return Locale.Lookup(CityManager.GetCity(ownerPlayerID, cityID):GetName()); end);
+	if ownerPlayerID == me then
+		Record("city", "New city: " .. (ok and name or "a city") .. " at (" .. cityX .. "," .. cityY .. ").");
+	else
+		Record("city", Civ(ownerPlayerID) .. " has a city " .. (ok and name or "") .. " at (" .. cityX .. "," .. cityY .. ").");
+	end
+end
+
+local function OnProductionCompleted(ownerPlayerID, cityID)
+	if ownerPlayerID ~= Game.GetLocalPlayer() then return; end
+	local ok, name = pcall(function() return Locale.Lookup(CityManager.GetCity(ownerPlayerID, cityID):GetName()); end);
+	Record("production", (ok and name or "A city") .. " finished its production.");
+end
+
+local function OnWonderCompleted(x, y)
+	Record("wonder", "A wonder was completed at (" .. tostring(x) .. "," .. tostring(y) .. ").");
+end
+
+local function OnNotificationAdded(playerID, notificationID)
+	if playerID ~= Game.GetLocalPlayer() then return; end
+	local ok, text = pcall(function()
+		local n = NotificationManager.Find(playerID, notificationID);
+		if n == nil then return nil; end
+		local msg = Locale.Lookup(n:GetMessage());
+		local summary = Locale.Lookup(n:GetSummary());
+		if summary ~= nil and summary ~= "" and summary ~= msg then msg = msg .. ": " .. summary; end
+		return msg;
+	end);
+	if ok and text and text ~= "" then Record("notification", text); end
+end
+
+local function BlockerName()
+	local ok, name = pcall(function()
+		local b = NotificationManager.GetFirstEndTurnBlocking(Game.GetLocalPlayer());
+		for k, v in pairs(EndTurnBlockingTypes) do if v == b then return k; end end
+		return nil;
+	end);
+	return ok and name or nil;
+end
+
+local function OnTurnBegin()
+	local turn = Game.GetCurrentGameTurn();
+	Record("turn", "Turn " .. turn .. " began.", { blocking = BlockerName() });
+	if Mailbox.autoBrief or Mailbox.autoAdvise then
+		AddEntry(COLOR_DIM .. "Turn " .. turn .. "[ENDCOLOR]");
+	end
+	if Mailbox.autoBrief then Queue("quick", "Turn brief", "turnbrief"); end
+	if Mailbox.autoAdvise then Queue("quick", "Turn advice", "turnadvice"); end
 end
 
 local function OnSelectionChanged()
@@ -444,6 +618,15 @@ function Initialize()
 	LuaEvents.AICivCopilot_Reply.Add(OnReply);
 	LuaEvents.AICivCopilot_Buttons.Add(OnButtons);
 	Events.LocalPlayerTurnBegin.Add(OnTurnBegin);
+	Events.DiplomacyIncomingDeal.Add(OnIncomingDeal);
+	Events.DiplomacyDeclareWar.Add(OnDeclareWar);
+	Events.DiplomacyMakePeace.Add(OnMakePeace);
+	Events.ResearchCompleted.Add(OnResearchCompleted);
+	Events.CivicCompleted.Add(OnCivicCompleted);
+	Events.CityAddedToMap.Add(OnCityAdded);
+	Events.CityProductionCompleted.Add(OnProductionCompleted);
+	Events.WonderCompleted.Add(OnWonderCompleted);
+	Events.NotificationAdded.Add(OnNotificationAdded);
 	Events.CitySelectionChanged.Add(OnSelectionChanged);
 	Events.UnitSelectionChanged.Add(OnSelectionChanged);
 	BuildTabs();

@@ -125,6 +125,12 @@ export class Game {
     return this.script("standing", {}, { timeoutMs: 30000 });
   }
 
+  // Wars, how every known civ feels about the player and why, deals on the
+  // table, and what blocks ending the turn.
+  async situation() {
+    return this.script("situation", {}, { timeoutMs: 20000 });
+  }
+
   async tiles(x, y, radius = 2, revealAll = false) {
     return this.script("plots", { x, y, radius, revealAll });
   }

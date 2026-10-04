@@ -164,6 +164,16 @@ export const STATIC_TOOLS = [
   },
   { name: "standing_trends", description: "Per-turn change of score, techs, civics, tourism, military and cities for every known civ, from the recorded history (calculated).", input_schema: obj({ turns: I("window, default 20") }) },
   {
+    name: "current_situation",
+    description: "What the player faces right now, read live: wars, every known civ's attitude to the player (DIPLO_STATE_*, 0-100 level) with the game's own reasons and scores, their military strength, any deal on the table (what they give, what they ask), and what blocks ending the turn. Start here for 'what should I do' and for any war or deal.",
+    input_schema: obj(),
+  },
+  {
+    name: "recent_events",
+    description: "Game events the panel recorded, grouped by turn: wars declared, peace, deals offered, research and civics completed, cities founded, production finished, wonders, notifications, and what blocked each turn.",
+    input_schema: obj({ turns: I("how many recent turns, default 3"), kinds: { type: "array", items: { type: "string" }, description: "only these kinds: war, peace, deal, research, civic, city, production, wonder, notification, turn" } }),
+  },
+  {
     name: "remember_api_fact",
     description: "Record a verified fact about the game's API (e.g. 'Players[id]:GetCulture():SetCivic(idx,true) works in GameCore_Tuner, not InGame'). Facts are shown to you on every later request. Only record what a result proved.",
     input_schema: obj({ fact: S("the fact"), topic: S("short topic tag") }, ["fact"]),
@@ -343,6 +353,12 @@ export async function dispatchTool(ctx, name, input = {}) {
     }
     case "standing_trends":
       return memory.history.trends(input.turns ?? 20);
+    case "current_situation":
+      return game.situation();
+    case "recent_events": {
+      const events = memory.events.recent({ turns: input.turns ?? 3, limit: 120, kinds: input.kinds });
+      return { count: events.length, events: events.map(({ at, ...e }) => e) };
+    }
     case "list_abilities":
       return memory.listAbilities().map((a) => ({
         name: a.name, kind: a.kind, state: a.state, description: a.description,

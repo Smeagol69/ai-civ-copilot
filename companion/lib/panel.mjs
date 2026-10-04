@@ -17,6 +17,7 @@ import * as solve from "./solvers.mjs";
 import { UI_STATE } from "./game.mjs";
 import * as dig from "./discovery.mjs";
 import { analyzeStanding, formatStanding } from "./strategy.mjs";
+import { formatEvents, formatSituation } from "./events.mjs";
 
 const r1 = (n) => (typeof n === "number" ? Math.round(n * 10) / 10 : n);
 const pretty = (t) =>
@@ -166,7 +167,9 @@ function selText(sel = {}) {
 }
 
 export const AI_PROMPTS = {
-  advise: () => "Review my empire and tell me the 3-5 most valuable things to do this turn, most important first. Be concrete (city, unit, item names). Do not change anything unless I ask.",
+  advise: () => "Advise me: look at what is happening right now and in the last turns. If anything needs a decision (a deal on the table, a war, an army near my cities, a city in trouble), give me the best plan of action for it first. Then the 3-5 most valuable things to do this turn, most important first. Be concrete (city, unit, item names). Do not change anything unless I ask.",
+  situation_ai: () => "Something just happened that needs a decision (see Right now and Recent events: a deal offered, or war declared on me). Tell me the best response: for a deal, accept / reject / counter (with the exact change) and why, using my real numbers; for a war, which cities are in danger, how strong they are against me, and my plan for the next 3 turns. Keep it short and decisive. Do not change anything unless I ask.",
+  turnadvice: () => "New turn. In at most 6 short lines: anything that needs a decision now first, then the best moves this turn (research, production, units, diplomacy). Only what matters this turn. Do not change anything.",
   build_ai: () => "For each of my cities, recommend what to build next and why, in one line per city. Then ask whether to set them.",
   research_ai: () => "Plan my next 5 techs: in order, with a one-line reason each and the turns from research_path. Ask before changing my research.",
   civic_ai: () => "Plan my next 3 civics and say which policies I should slot now and why. Ask before changing anything.",
@@ -326,6 +329,19 @@ export const HANDLERS = {
   },
   reveal_map: { run: (ctx) => action("Reveal map", "reveal_map", {})(ctx) },
 
+  events: {
+    run: async (ctx) => {
+      const events = ctx.memory.events.recent({ turns: 2, limit: 80 });
+      let now = "";
+      try {
+        now = formatSituation(await ctx.game.situation());
+      } catch (err) {
+        now = `(situation not readable: ${err.message})`;
+      }
+      return { text: `${formatEvents(events)}\n\nNow:\n${now}` };
+    },
+  },
+  situation: { run: async (ctx) => ({ text: formatSituation(await ctx.game.situation()) }) },
   standing: {
     run: async (ctx) => {
       const s = await ctx.game.standing();

@@ -9,6 +9,9 @@
 // answer through LuaEvents.AICivCopilot_Reply.
 
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Game, UI_STATE } from "./lib/game.mjs";
 import { Memory } from "./lib/memory.mjs";
 import { GameFiles } from "./lib/gamefiles.mjs";
@@ -53,15 +56,28 @@ function makeCtx(onProgress) {
 }
 
 // ------------------------------------------------------------------ panel
+// Each poll takes the panel's new requests (keeping them in m.taken until
+// their final reply, so a bridge restart can pick them up again with
+// P.recover) and drains the game events the panel recorded.
 const POLL_LUA = `
 local m = ExposedMembers and ExposedMembers.AICivCopilot
 if m == nil then emitJson({ panel = false }) return end
 local q = m.outbox or {}
 m.outbox = {}
+m.taken = m.taken or {}
+local recovered = {}
+if P.recover then for _, r in pairs(m.taken) do recovered[#recovered + 1] = r end end
+for _, r in ipairs(q) do if r.id and r.id ~= 0 then m.taken[r.id] = r end end
+local ev = m.events or {}
+m.events = {}
 m.bridgeTicks = (m.bridgeTicks or 0) + 1
-emitJson({ panel = true, questions = q, turn = Game.GetCurrentGameTurn() })
+emitJson({ panel = true, version = m.version, questions = q, recovered = recovered, events = ev, turn = Game.GetCurrentGameTurn() })
 `;
-const REPLY_LUA = `LuaEvents.AICivCopilot_Reply(P.id, P.kind, P.text)`;
+const REPLY_LUA = `
+local m = ExposedMembers and ExposedMembers.AICivCopilot
+if m and m.taken and (P.kind == "answer" or P.kind == "error") then m.taken[P.id] = nil end
+LuaEvents.AICivCopilot_Reply(P.id, P.kind, P.text)`;
+const PANEL_STATE = "AICivCopilotPanel";
 const BUTTONS_LUA = `LuaEvents.AICivCopilot_Buttons(P.group, P.items)`;
 
 async function sendButtons(group, items) {
@@ -147,8 +163,9 @@ async function handlePanel(q) {
     const text = String(q.text || "").trim();
     if (!text) return;
     log(`panel question #${q.id}: ${text}`);
+    const ahead = aiQueue.length + (aiRunning ? 1 : 0);
+    if (ahead) await reply(q.id, "status", `Queued behind ${ahead} AI request(s)...`);
     aiQueue.push({ id: q.id, refreshAbilities: true, run: async (onProgress) => (await answer("panel", text, onProgress)).answer });
-    if (aiQueue.length > 1 || aiRunning) await reply(q.id, "status", `Queued behind ${aiQueue.length - 1 + (aiRunning ? 1 : 0)} AI request(s)...`);
     runAiQueue();
     return;
   }
@@ -156,6 +173,8 @@ async function handlePanel(q) {
   const key = String(q.key || "");
   log(`panel button #${q.id}: ${key}`);
   if (AI_PROMPTS[key]) {
+    const ahead = aiQueue.length + (aiRunning ? 1 : 0);
+    if (ahead) await reply(q.id, "status", `Queued behind ${ahead} AI request(s)...`);
     aiQueue.push({
       id: q.id,
       refreshAbilities: ["explore_ai", "dig_ai", "dig3_ai"].includes(key),
@@ -177,23 +196,98 @@ async function handlePanel(q) {
   }
 }
 
+// Requests taken by an earlier bridge process that never got a final reply.
+// AI requests run again; game actions are not repeated (the earlier process
+// may have done them) - the player is asked to press again.
+async function recover(list) {
+  for (const q of list || []) {
+    const isAi = (q.kind || "ask") === "ask" || AI_PROMPTS[String(q.key || "")];
+    if (isAi) {
+      log(`picking up #${q.id} (${q.key || "question"}) after a bridge restart`);
+      await reply(q.id, "status", "Picked up again after a bridge restart...");
+      await handlePanel(q);
+    } else {
+      await reply(q.id, "error", `The bridge restarted before [${q.text || q.key}] finished. Check the game, then press it again if it was not done.`);
+    }
+  }
+}
+
+let recovered = false;
+let lastStateRefresh = 0;
+let lastInject = 0;
+
+// A game started with the mod switched off (it is per game in the setup
+// screen) has no panel. InGame.lua loads add-in UIs by absolute path with
+// ContextPtr:LoadNewContext(path, Controls.AdditionalUserInterfaces, id,
+// hidden), so the bridge can do the same from the installed mod folder.
+const PANEL_PATH = (process.env.AICIV_PANEL_PATH || path.join(os.homedir(), "Documents", "My Games", "Sid Meier's Civilization VI", "Mods", "AICivCopilot", "UI", "AICivCopilotPanel")).replace(/\\/g, "/");
+const INJECT_LUA = `
+local ctx = ContextPtr:LoadNewContext(P.path, Controls.AdditionalUserInterfaces, P.id, true)
+emitJson({ ok = ctx ~= nil })
+`;
+async function injectPanel() {
+  if (Date.now() - lastInject < 60000) return false;
+  lastInject = Date.now();
+  if (!fs.existsSync(`${PANEL_PATH}.xml`)) {
+    log(`cannot add the panel: ${PANEL_PATH}.xml is missing (run scripts\\install.ps1)`);
+    return false;
+  }
+  try {
+    const { value } = await game.lua(UI_STATE, INJECT_LUA, { params: { path: PANEL_PATH, id: PANEL_STATE }, timeoutMs: 20000 });
+    await game.tuner.refreshStates();
+    const ok = !!value?.ok && game.tuner.states.some((s) => s.name === PANEL_STATE);
+    log(ok ? "added the copilot panel to this game (the mod was off for it)" : "tried to add the copilot panel, but it did not load");
+    return ok;
+  } catch (err) {
+    log(`could not add the panel: ${err.message}`);
+    return false;
+  }
+}
+
 async function pollPanel() {
   if (!game.connected) return;
   let res;
   try {
-    ({ value: res } = await game.lua(UI_STATE, POLL_LUA, { timeoutMs: 5000 }));
+    ({ value: res } = await game.lua(UI_STATE, POLL_LUA, { timeoutMs: 5000, params: { recover: !recovered } }));
   } catch (err) {
     state.panel = false;
     if (!/not found/.test(err.message)) log(`poll: ${err.message}`);
     return;
   }
   if (!res) return;
-  if (res.panel && !state.panel) {
-    log("in-game panel detected");
+  // The mailbox outlives a game (ExposedMembers is app-wide), so the panel is
+  // only "loaded" when its own Lua state exists in this game.
+  // Injecting happens only right after a fresh state list confirms the panel
+  // is missing, so a slow list never leads to a second panel.
+  let loaded = game.tuner.states.some((s) => s.name === PANEL_STATE);
+  if (!loaded && Date.now() - lastStateRefresh > 15000) {
+    lastStateRefresh = Date.now();
+    let fresh = false;
+    try {
+      await game.tuner.refreshStates();
+      fresh = true;
+      loaded = game.tuner.states.some((s) => s.name === PANEL_STATE);
+    } catch {
+      // keep the last answer
+    }
+    if (fresh && !loaded) {
+      log(`the copilot panel is not loaded in this game (no "${PANEL_STATE}" Lua state); adding it`);
+      loaded = await injectPanel();
+    }
+  }
+  state.panelLoaded = loaded;
+  state.panelVersion = res.version ?? null;
+  if (res.events?.length) {
+    memory.events.add(res.events);
+    for (const e of res.events) if (e.kind === "war" || e.kind === "deal" || e.kind === "peace") log(`event: ${e.text}`);
+  }
+  const live = !!(res.panel && state.panelLoaded);
+  if (live && !state.panel) {
+    log(`in-game panel detected (version ${res.version ?? "?"})`);
     // A mod's UI context starts hidden; make sure the panel's is shown (the
     // panel does this itself too - this covers older installed versions).
     try {
-      await game.lua("AICivCopilotPanel", "ContextPtr:SetHide(false)");
+      await game.lua(PANEL_STATE, "ContextPtr:SetHide(false)");
     } catch (err) {
       log(`could not show the panel context: ${err.message}`);
     }
@@ -201,13 +295,17 @@ async function pollPanel() {
     await reply(0, "hello", DEFAULT_MODEL);
     await sendButtons("abilities", abilityButtons(memory));
   }
-  state.panel = !!res.panel;
+  state.panel = live;
   if (res.turn != null && res.turn !== state.lastHistoryTurn) {
     // Once per turn: record everyone's standing, so trends build up over time.
     state.lastHistoryTurn = res.turn;
     game.standing().then((s) => s && !s.error && memory.history.record(s)).catch((err) => log(`standing: ${err.message}`));
   }
   state.turn = res.turn ?? state.turn;
+  if (!recovered) {
+    recovered = true;
+    await recover(res.recovered);
+  }
   for (const q of res.questions || []) await handlePanel(q);
 }
 

@@ -118,3 +118,42 @@ test("a road where everyone is at zero reads as 'nobody has any yet'", () => {
   const s = { ...STANDING, players: STANDING.players.map((p) => (p.known ? { ...p, capitalsHeld: 0 } : p)) };
   assert.match(formatStanding(analyzeStanding(s)), /Domination: nobody has any yet/);
 });
+
+test("the event log keeps the current game's recent turns and formats them", async () => {
+  const { EventLog, formatEvents, formatSituation } = await import("../lib/events.mjs");
+  const log = new EventLog(tmp());
+  log.add([{ kind: "turn", text: "Turn 271 began.", turn: 271 }, { kind: "research", text: "Researched Banking.", turn: 271 }]);
+  // A new game: turn numbers restart, so the old game's events drop out.
+  log.add([{ kind: "turn", text: "Turn 1 began.", turn: 1, blocking: "ENDTURN_BLOCKING_UNITS" }, { kind: "notification", text: "Meet Mongolia", turn: 1 }]);
+  log.add([{ kind: "war", text: "Mongolia declared war on you!", turn: 2 }, { kind: "notification", text: "Meet Mongolia", turn: 2 }, { kind: "notification", text: "Meet Mongolia", turn: 2 }, { bad: true }]);
+  const recent = log.recent({ turns: 2 });
+  assert.ok(recent.every((e) => e.turn <= 2), "only the current game");
+  const text = formatEvents(recent);
+  assert.match(text, /Turn 1:\n- waiting on: units/);
+  assert.match(text, /! Mongolia declared war on you!/);
+  assert.match(text, /Meet Mongolia \(x2\)/);
+  assert.deepEqual(log.recent({ kinds: ["war"] }).map((e) => e.kind), ["war"]);
+
+  const s = formatSituation({
+    turn: 40, wars: ["Mongolia"], blocking: "ENDTURN_BLOCKING_PRODUCTION",
+    deals: [{ civ: "France", gives: ["peace"], asks: ["100 gold"] }],
+    civs: [
+      { civ: "England", mood: "DIPLO_STATE_FRIENDLY", moodLevel: 70, military: 90, reasons: [{ score: 6, text: "Trading partners" }] },
+      { civ: "Mongolia", mood: "DIPLO_STATE_WAR", moodLevel: 0, atWar: true, military: 300, reasons: [] },
+    ],
+  });
+  assert.match(s, /! At war with: Mongolia/);
+  assert.match(s, /! Deal from France: they give peace; they ask 100 gold/);
+  assert.match(s, /worst first\):\n- Mongolia: AT WAR/);
+  assert.match(s, /England: friendly, military 90 \(\+6 Trading partners\)/);
+  assert.match(s, /Before ending the turn: production/);
+});
+
+test("history starts a new file when a different game begins", () => {
+  const dir = tmp();
+  const h = new History(dir);
+  h.record(STANDING);
+  h.record({ ...STANDING, turn: 1 });
+  assert.equal(h.rows().length, 1, "the new game's history starts fresh");
+  assert.equal(fs.readdirSync(dir).filter((f) => /^history-\d+\.jsonl$/.test(f)).length, 1, "the old game's history is kept");
+});

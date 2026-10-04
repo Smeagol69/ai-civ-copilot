@@ -8,6 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { allTools, runTool } from "./tools.mjs";
 import { leanPayload } from "./solvers.mjs";
 import { UI_STATE, CORE_STATE } from "./game.mjs";
+import { formatEvents, formatSituation } from "./events.mjs";
 
 export const DEFAULT_MODEL = process.env.AICIV_MODEL || "claude-fable-5-1";
 const EFFORT = process.env.AICIV_EFFORT || "high";
@@ -44,6 +45,12 @@ Digging (growing what you can do): dig_map maps the whole API, dig_frontier list
 
 Strategy: for "what should I do" questions, start from victory_standing (strongest road, biggest threat) and standing_trends, then solvers. Recommend one road to victory and the next concrete moves toward it, and name the rival to watch.
 
+Situations: every request starts with what is happening now (wars, deals on the table, how each civ feels about the player and why) and what happened in the last turns. When something needs a decision - a deal offered, war declared, an army near a city, a city about to flip or starve - deal with that first:
+- A deal: weigh what they give against what they ask using the player's real numbers (gold and gold per turn, resource counts, amenities, war state). Say accept, reject, or counter with a specific change, and why.
+- War declared on the player: name the cities in danger (threat_report, distances), the attacker's military against the player's, and give a defence plan for the next 3 turns: what to build or buy in which city, which units to move where, walls, and peace terms or allies worth seeking.
+- Otherwise, the most valuable moves this turn, most urgent first.
+Be decisive: one recommended plan, not a menu. current_situation and recent_events give more detail.
+
 Answer style: the answer appears in a small in-game panel. Be direct and short. Plain text, short lines, simple "- " lists; no tables, no headings, no code blocks unless asked. Use city and unit names, and give coordinates as (x,y).
 
 ${abilities.length ? `Saved abilities (also available as ability__<name> tools):\n${abilities.map((a) => `- ${a.name} [${a.kind}, ${a.state}]: ${a.description}`).join("\n")}\n` : "No abilities saved yet.\n"}
@@ -65,6 +72,22 @@ export async function ask({ client, model = DEFAULT_MODEL, question, history = [
     snap = { error: `could not read the game: ${err.message}` };
   }
   const lean = leanPayload(snap);
+  // What is going on: the live situation and recent events.
+  let situation = "";
+  if (typeof ctx.game?.situation === "function") {
+    try {
+      situation = formatSituation(await ctx.game.situation());
+    } catch (err) {
+      situation = `(could not read the situation: ${err.message})`;
+    }
+  }
+  let events = "";
+  try {
+    const recent = memory?.events?.recent({ turns: 2, limit: 40 }) || [];
+    if (recent.length) events = formatEvents(recent);
+  } catch {
+    events = "";
+  }
 
   const messages = [];
   for (const h of history.slice(-6)) {
@@ -75,6 +98,8 @@ export async function ask({ client, model = DEFAULT_MODEL, question, history = [
     role: "user",
     content: [
       { type: "text", text: `Current game (lean view; full data via tools):\n${JSON.stringify(lean)}` },
+      ...(situation ? [{ type: "text", text: `Right now:\n${situation}` }] : []),
+      ...(events ? [{ type: "text", text: `Recent events:\n${events}` }] : []),
       { type: "text", text: question },
     ],
   });
