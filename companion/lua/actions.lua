@@ -59,10 +59,13 @@ end
 
 
 -- Generic unit read-back: compare the unit before and after a request.
+local activityNames = {}
+pcall(function() for k, v in pairs(ActivityTypes) do activityNames[v] = k end end)
 local function unitState(u)
   if not u then return { exists = false } end
+  local a = UnitManager.GetActivityType(u)
   return { exists = true, x = u:GetX(), y = u:GetY(), moves = u:GetMovesRemaining(), damage = u:GetDamage(),
-    activity = UnitManager.GetActivityType(u) }
+    activity = activityNames[a] or a }
 end
 local function unitChanged(b, a)
   if not b or not a then return a ~= nil end
@@ -477,7 +480,7 @@ if not fn then
 end
 local ok, res = pcall(fn, P)
 if not ok then
-  emitJson(fail('Lua error: ' .. tostring(res)))
+  emitJson(fail('Lua error: ' .. shortErr(res)))
   return
 end
 res.gaps = __gaps

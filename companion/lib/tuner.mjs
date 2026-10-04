@@ -81,6 +81,13 @@ export function parseStateList(payload) {
   return states;
 }
 
+// Engine errors carry the whole chunk source as the chunk name plus a
+// traceback. Keep "line N: message".
+export function shortLuaError(msg) {
+  const first = String(msg).split("\n")[0];
+  return first.replace(/^\[string ".*?"\]:(\d+):/, "line $1:").trim();
+}
+
 export class LuaError extends Error {
   constructor(message, { state, code } = {}) {
     super(message);
@@ -287,7 +294,7 @@ export class TunerClient extends EventEmitter {
         const text = out.text;
         if (text === end || text.endsWith(end)) break;
         const ei = text.indexOf(errTag);
-        if (ei >= 0) throw new LuaError(text.slice(ei + errTag.length), { state: stateName, code: "runtime" });
+        if (ei >= 0) throw new LuaError(shortLuaError(text.slice(ei + errTag.length)), { state: stateName, code: "runtime" });
         const ti = text.indexOf(tag);
         if (ti >= 0) lines.push(text.slice(ti + tag.length));
       }

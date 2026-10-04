@@ -83,11 +83,21 @@ end
 
 -- Run fn and record a failure by name instead of aborting the whole call.
 -- An unavailable API leaves a named gap; it never guesses a value.
+-- Error text from the engine carries the whole chunk name and a traceback;
+-- keep only "line N: message".
+local function shortErr(e)
+  local s = tostring(e)
+  local nl = string.find(s, '\n', 1, true)
+  if nl then s = string.sub(s, 1, nl - 1) end
+  s = string.gsub(s, '^%[string ".-"%]:(%d+):', 'line %1:')
+  return s
+end
+
 local __gaps = {}
 local function try(name, fn, ...)
   local ok, res = pcall(fn, ...)
   if ok then return res end
-  __gaps[#__gaps + 1] = name .. ': ' .. tostring(res)
+  __gaps[#__gaps + 1] = name .. ': ' .. shortErr(res)
   return nil
 end
 

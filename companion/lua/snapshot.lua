@@ -28,9 +28,14 @@ S.meta = try('meta', function()
     plotCount = Map.GetPlotCount(),
   }
   m.maxTurns = try('meta.maxTurns', function() return GameConfiguration.GetValue('GAME_MAX_TURNS') end)
+  -- Live: Game.GetGameSpeedType does not exist in InGame; the shipped UI
+  -- uses GameConfiguration.GetGameSpeedType(), which returns a hash.
   m.gameSpeed = try('meta.gameSpeed', function()
-    local r = GameInfo.GameSpeeds[Game.GetGameSpeedType()]
-    return r and r.GameSpeedType
+    local v = GameConfiguration.GetGameSpeedType()
+    for r in GameInfo.GameSpeeds() do
+      if r.Hash == v or r.Index == v then return r.GameSpeedType end
+    end
+    return v
   end)
   m.era = try('meta.era', function()
     local r = GameInfo.Eras[Game.GetEras():GetCurrentEra()]
@@ -190,6 +195,12 @@ S.cities = try('cities', function()
   return out
 end)
 
+-- UnitManager.GetActivityType returns a value of the ActivityTypes enum;
+-- name it by reverse lookup (there is no GameInfo table for activities).
+local activityNames = {}
+pcall(function() for k, v in pairs(ActivityTypes) do activityNames[v] = k end end)
+local function activityName(a) return activityNames[a] or a end
+
 S.units = try('units', function()
   local out = {}
   for _, u in pMe:GetUnits():Members() do
@@ -203,11 +214,7 @@ S.units = try('units', function()
       o.charges = try('unit.charges', function() return u:GetBuildCharges() end)
       o.xp = try('unit.xp', function() return u:GetExperience():GetExperiencePoints() end)
       o.level = try('unit.level', function() return u:GetExperience():GetLevel() end)
-      o.activity = try('unit.activity', function()
-        local a = UnitManager.GetActivityType(u)
-        local ar = GameInfo.UnitActivities and GameInfo.UnitActivities[a]
-        return ar and ar.UnitActivityType or a
-      end)
+      o.activity = try('unit.activity', function() return activityName(UnitManager.GetActivityType(u)) end)
       out[#out + 1] = o
     end
   end
