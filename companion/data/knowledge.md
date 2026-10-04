@@ -6,3 +6,10 @@
 - [2026-10-04] (diplomacy) In GameCore_Tuner, Players[id]:GetDiplomacy() has MakePeaceWith, DeclareWarOn, SetHasMet, CanMakePeaceWith, CanDeclareWarOn and ChangeFavor (favor lives on the diplomacy object, not on Player). InGame's diplomacy object has only the Can* checks.
 - [2026-10-04] (map) PlayerVisibility:RevealAllPlots() and City BuildQueue:FinishProgress() exist only in GameCore_Tuner.
 - [2026-10-04] (tuner) Every line the bridge emits is also written to Lua.log in %LOCALAPPDATA%/Firaxis Games/Sid Meier's Civilization VI/Logs, so a full snapshot adds ~20 KB there per call.
+- [2026-10-04] (map) The map grid is odd-r offset (odd rows shifted right, y grows north) and wraps east-west only here (Map.IsWrapX() true, IsWrapY() false). Map.GetPlotDistance wraps; naive offset maths does not - (73,35)-(2,35) is 3, not 71.
+- [2026-10-04] (map) Walk a disc of tiles with Map.GetPlotXYWithRangeCheck(x, y, dx, dy, r) (Firaxis' MapUtilities.lua): it wraps x and returns nil past the poles. Never call Map.GetPlot with coordinates outside 0..W-1 / 0..H-1 - no shipped script does.
+- [2026-10-04] (map) Plot:GetYield in GameCore_Tuner leaves out improvement and district yields; InGame's matches the tile tooltip. Read tile yields in InGame.
+- [2026-10-04] (units) Units on a tile, all layers (traders, religious units, spies): Units.GetUnitsInPlotLayerID(x, y, MapLayers.ANY) in InGame. Map.GetUnitsAt misses non-default layers, and in GameCore it takes a plot object, not x,y.
+- [2026-10-04] (units) Unit:IsReadyToSelect() is the game's own 'needs orders' test; units on trade routes or automated orders are ACTIVITY_OPERATION and are not idle.
+- [2026-10-04] (cities) GameCore_Tuner's City BuildQueue has no GetSize or GetCurrentProductionTypeHash (InGame only); use CurrentlyBuilding() there. GameCore's Culture has no GetCulturalProgress; it has SetCulturalProgress and GetTurnsLeftOnCurrentCivic.
+- [2026-10-04] (research) Techs:GetResearchProgress(index) is non-zero for boosted techs that are not researchable yet (Military Science 370/930 while locked); include it when estimating a research path.

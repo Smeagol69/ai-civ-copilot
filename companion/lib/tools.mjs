@@ -169,7 +169,7 @@ export async function dispatchTool(ctx, name, input = {}) {
     }
     case "get_city": {
       const snap = await ctx.snapshot();
-      const c = (snap.cities || []).find((x) => x.id === input.cityId);
+      const c = (snap.cities || []).find((x) => x.id === Number(input.cityId));
       return c || { error: `no city ${input.cityId}`, cities: (snap.cities || []).map((x) => ({ id: x.id, name: x.name })) };
     }
     case "get_tiles":
@@ -177,7 +177,13 @@ export async function dispatchTool(ctx, name, input = {}) {
     case "query_gameinfo": {
       const { value } = await game.lua(UI_STATE, QUERY_GAMEINFO_LUA, { params: { table: input.table, match: input.match, limit: input.limit ?? 40 } });
       if (value?.rows && input.columns?.length) {
+        const seen = new Set(value.rows.flatMap((r) => Object.keys(r)));
+        const unknown = input.columns.filter((c) => !seen.has(c));
         value.rows = value.rows.map((r) => Object.fromEntries(input.columns.filter((c) => c in r).map((c) => [c, r[c]])));
+        if (unknown.length) {
+          value.unknownColumns = unknown;
+          value.availableColumns = [...seen].sort();
+        }
       }
       return value;
     }
@@ -199,6 +205,9 @@ export async function dispatchTool(ctx, name, input = {}) {
     case "rival_comparison":
       return solve.rivalComparison(await ctx.snapshot());
     case "find_units":
+      if ((input.x === undefined) !== (input.y === undefined) || (input.radius !== undefined && input.x === undefined)) {
+        return { error: "the near filter needs both x and y (and radius only with them)" };
+      }
       return solve.findUnits(await ctx.snapshot(), {
         type: input.type, idleOnly: input.idleOnly,
         near: Number.isInteger(input.x) && Number.isInteger(input.y) ? { x: input.x, y: input.y } : undefined,
@@ -207,7 +216,7 @@ export async function dispatchTool(ctx, name, input = {}) {
     case "research_path": {
       const snap = await ctx.snapshot();
       const { value } = await game.lua(UI_STATE, TECH_PREREQS_LUA);
-      return solve.researchPath(snap, value?.prereqs || {}, input.target, value?.costs || {});
+      return solve.researchPath(snap, value?.prereqs || {}, String(input.target || "").toUpperCase(), value?.costs || {}, value?.progress || {});
     }
 
     case "perform_action": {
@@ -356,6 +365,10 @@ for r in GameInfo.TechnologyPrereqs() do
   table.insert(pre[r.Technology], r.PrereqTech)
 end
 local te = Players[Game.GetLocalPlayer()]:GetTechs()
-for r in GameInfo.Technologies() do costs[r.TechnologyType] = te:GetResearchCost(r.Index) end
-emitJson({ prereqs = pre, costs = costs })
+local prog = {}
+for r in GameInfo.Technologies() do
+  costs[r.TechnologyType] = te:GetResearchCost(r.Index)
+  prog[r.TechnologyType] = te:GetResearchProgress(r.Index)
+end
+emitJson({ prereqs = pre, costs = costs, progress = prog })
 `;

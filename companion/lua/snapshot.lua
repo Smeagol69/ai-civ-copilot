@@ -27,6 +27,9 @@ S.meta = try('meta', function()
     mapHeight = select(2, Map.GetGridSize()),
     plotCount = Map.GetPlotCount(),
   }
+  -- The map wraps east-west on most map types; distances must wrap too.
+  m.wrapX = try('meta.wrapX', function() return Map.IsWrapX() end)
+  m.wrapY = try('meta.wrapY', function() return Map.IsWrapY() end)
   m.maxTurns = try('meta.maxTurns', function() return GameConfiguration.GetValue('GAME_MAX_TURNS') end)
   -- Live: Game.GetGameSpeedType does not exist in InGame; the shipped UI
   -- uses GameConfiguration.GetGameSpeedType(), which returns a hash.
@@ -215,6 +218,8 @@ S.units = try('units', function()
       o.xp = try('unit.xp', function() return u:GetExperience():GetExperiencePoints() end)
       o.level = try('unit.level', function() return u:GetExperience():GetLevel() end)
       o.activity = try('unit.activity', function() return activityName(UnitManager.GetActivityType(u)) end)
+      -- The game's own "needs orders" test (UnitFlagManager.lua dims units with it).
+      o.ready = try('unit.ready', function() return u:IsReadyToSelect() end)
       out[#out + 1] = o
     end
   end

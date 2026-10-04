@@ -64,7 +64,11 @@ export function productionOverview(snap) {
   };
 }
 
+// Wrap width for distance maths: the map width when it wraps east-west.
+const wrapOf = (snap) => (snap.meta?.wrapX ? snap.meta.mapWidth || 0 : 0);
+
 export function threatReport(snap) {
+  const wrap = wrapOf(snap);
   const players = new Map((snap.players || []).map((p) => [p.id, p]));
   const threats = (snap.visibleForeignUnits || [])
     .filter((u) => (u.combat || 0) > 0 || (u.ranged || 0) > 0)
@@ -73,7 +77,7 @@ export function threatReport(snap) {
       const hostile = u.barbarian || p?.atWar || false;
       let nearestCity = null;
       for (const c of snap.cities || []) {
-        const d = hexDistance(u.x, u.y, c.x, c.y);
+        const d = hexDistance(u.x, u.y, c.x, c.y, wrap);
         if (!nearestCity || d < nearestCity.distance) nearestCity = { name: c.name, cityId: c.id, distance: d };
       }
       return { ...u, ownerName: u.barbarian ? "Barbarians" : p?.civName ?? `player ${u.owner}`, hostile, nearestCity };
@@ -103,16 +107,25 @@ export function rivalComparison(snap) {
 export function findUnits(snap, { type, idleOnly, near, radius = 3 } = {}) {
   let us = snap.units || [];
   if (type) us = us.filter((u) => (u.type || "").toLowerCase().includes(type.toLowerCase()));
-  if (idleOnly) us = us.filter((u) => u.moves > 0 && !/FORTIF|SLEEP|SENTRY/i.test(String(u.activity ?? "")));
-  if (near) us = us.filter((u) => hexDistance(u.x, u.y, near.x, near.y) <= radius);
+  // The game's IsReadyToSelect when the snapshot has it; otherwise an awake
+  // unit with moves (units on trade routes or orders are ACTIVITY_OPERATION).
+  if (idleOnly) us = us.filter((u) => (u.ready != null ? u.ready === true : u.moves > 0 && u.activity === "ACTIVITY_AWAKE"));
+  const wrap = wrapOf(snap);
+  if (near) us = us.filter((u) => hexDistance(u.x, u.y, near.x, near.y, wrap) <= radius);
   return { count: us.length, units: us };
 }
 
 // Remaining research to reach a target tech, in prerequisite order.
-// prereqs: { TECH_X: ["TECH_Y", ...] } from the game database.
-export function researchPath(snap, prereqs, target, costs = {}) {
+// prereqs: { TECH_X: ["TECH_Y", ...] } from the game database; costs and
+// progress for every tech (progress matters: boosts apply to techs that are
+// not researchable yet - live, Military Science had 370/930 while locked).
+export function researchPath(snap, prereqs, target, costs = {}, progress = {}) {
   const have = new Set(snap.techs?.researched || []);
   if (have.has(target)) return { target, alreadyResearched: true };
+  const avail0 = new Set((snap.techs?.available || []).map((t) => t.type));
+  if (!(target in costs) && !avail0.has(target) && !(target in prereqs)) {
+    return { target, error: "unknown tech type", hint: "use the TECH_* name exactly as in GameInfo.Technologies (upper case)" };
+  }
   const order = [];
   const seen = new Set();
   const visit = (t) => {
@@ -127,33 +140,39 @@ export function researchPath(snap, prereqs, target, costs = {}) {
   const steps = order.map((t) => {
     const a = avail.get(t);
     const cost = a?.cost ?? costs[t] ?? null;
-    const progress = a?.progress ?? 0;
-    const left = cost === null ? null : Math.max(0, cost - progress);
+    const done = a?.progress ?? progress[t] ?? 0;
+    const left = cost === null ? null : Math.max(0, cost - done);
     if (left !== null) remaining += left;
-    return { tech: t, cost, progress, remaining: left, researchableNow: !!a };
+    return { tech: t, cost, progress: done, remaining: left, researchableNow: !!a };
   });
+  const unknownCosts = steps.filter((s) => s.cost === null).map((s) => s.tech);
   const spt = snap.me?.science;
   return {
     target,
     steps,
     totalScienceRemaining: Math.round(remaining),
     sciencePerTurn: spt,
-    estimatedTurns: spt > 0 ? Math.ceil(remaining / spt) : null,
-    estimate: "calculated: remaining cost / current science per turn; ignores boosts, overflow and future science growth",
+    estimatedTurns: spt > 0 && !unknownCosts.length ? Math.ceil(remaining / spt) : null,
+    unknownCosts: unknownCosts.length ? unknownCosts : undefined,
+    estimate: "calculated: remaining cost (after progress already made, including boosts) / current science per turn; ignores future boosts, overflow and science growth",
   };
 }
 
-// Approximate hex distance for ranking only (odd-row offset layout). The
-// authoritative distance is Map.GetPlotDistance, which the snapshot already
-// reports as distanceToNearestOwned on every visible foreign unit.
-export function hexDistance(x1, y1, x2, y2) {
+// Hex distance on Civ VI's grid: odd-r offset (odd rows shifted right, y
+// grows north), wrapping east-west when wrapWidth is the map width. Matched
+// Map.GetPlotDistance on 35/35 live pairs, including across the seam
+// ((73,35)-(2,35) = 3), on 2026-10-04.
+export function hexDistance(x1, y1, x2, y2, wrapWidth = 0) {
   const toCube = (x, y) => {
     const q = x - (y - (y & 1)) / 2;
     return [q, y, -q - y];
   };
-  const [a1, b1, c1] = toCube(x1, y1);
-  const [a2, b2, c2] = toCube(x2, y2);
-  return Math.max(Math.abs(a1 - a2), Math.abs(b1 - b2), Math.abs(c1 - c2));
+  const a = toCube(x1, y1);
+  const d = (xb) => {
+    const b = toCube(xb, y2);
+    return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+  };
+  return wrapWidth > 0 ? Math.min(d(x2), d(x2 + wrapWidth), d(x2 - wrapWidth)) : d(x2);
 }
 
 // What the model sees up front: enough to orient, small enough to be cheap.

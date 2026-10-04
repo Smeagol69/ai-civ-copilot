@@ -64,3 +64,39 @@ test("lean payload is small and drops the bulky lists", () => {
   assert.equal(lean.threats.length, 2);
   assert.deepEqual(solve.leanPayload({ error: "no local player" }), { error: "no local player" });
 });
+
+import { LIVE_DISTANCES, LIVE_MAP } from "./fixtures/live-distances.mjs";
+
+test("hex distance matches the game's Map.GetPlotDistance on every live pair, across the seam too", () => {
+  for (const [x1, y1, x2, y2, d] of LIVE_DISTANCES) {
+    assert.equal(solve.hexDistance(x1, y1, x2, y2, LIVE_MAP.width), d, `(${x1},${y1})-(${x2},${y2})`);
+  }
+});
+
+test("units across the east-west seam are found, and threats ranked, by wrapped distance", () => {
+  const snap = { ...SNAP, meta: { ...SNAP.meta, mapWidth: 74, wrapX: true }, units: [{ id: 9, type: "UNIT_SETTLER", x: 1, y: 34, moves: 2 }] };
+  assert.equal(solve.findUnits(snap, { near: { x: 73, y: 34 }, radius: 3 }).count, 1);
+  assert.equal(solve.findUnits({ ...snap, meta: { ...snap.meta, wrapX: false } }, { near: { x: 73, y: 34 }, radius: 3 }).count, 0);
+});
+
+test("idle means the game's ready-to-select, not merely 'has moves'", () => {
+  const snap = { ...SNAP, units: [
+    { id: 1, type: "UNIT_TRADER", moves: 2, activity: "ACTIVITY_OPERATION", ready: false },
+    { id: 2, type: "UNIT_QUADRIREME", moves: 4, activity: "ACTIVITY_AWAKE", ready: true },
+    { id: 3, type: "UNIT_GALLEY", moves: 4, activity: "ACTIVITY_OPERATION" },
+    { id: 4, type: "UNIT_WARRIOR", moves: 2, activity: "ACTIVITY_AWAKE" },
+  ] };
+  assert.deepEqual(solve.findUnits(snap, { idleOnly: true }).units.map((u) => u.id), [2, 4]);
+});
+
+test("research path counts progress on locked techs and refuses unknown targets", () => {
+  const prereqs = { TECH_COMBINED_ARMS: ["TECH_MILITARY_SCIENCE"], TECH_MILITARY_SCIENCE: ["TECH_EDUCATION"] };
+  const costs = { TECH_COMBINED_ARMS: 1400, TECH_MILITARY_SCIENCE: 930 };
+  const progress = { TECH_COMBINED_ARMS: 707, TECH_MILITARY_SCIENCE: 370 };
+  const r = solve.researchPath(SNAP, prereqs, "TECH_COMBINED_ARMS", costs, progress);
+  assert.equal(r.totalScienceRemaining, (930 - 370) + (1400 - 707));
+  assert.match(r.estimate, /after progress already made/);
+  const bad = solve.researchPath(SNAP, prereqs, "TECH_FOO", costs, progress);
+  assert.equal(bad.error, "unknown tech type");
+  assert.equal(bad.estimatedTurns, undefined);
+});
