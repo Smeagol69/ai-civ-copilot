@@ -18,12 +18,16 @@ import { Memory } from "../lib/memory.mjs";
 import { GameFiles } from "../lib/gamefiles.mjs";
 import { performAction } from "../lib/actions.mjs";
 import { runTool } from "../lib/tools.mjs";
-import { unfinished } from "../lib/inflight.mjs";
+import { suspects } from "../lib/inflight.mjs";
 
 const BASE = `http://127.0.0.1:${process.env.AICIV_PORT || 8737}`;
 const argv = process.argv.slice(2);
-const direct = argv.includes("--direct");
-const args = argv.filter((a) => a !== "--direct");
+// --direct talks to the game itself, unless a bridge is running: then the
+// call goes through the bridge's single connection, so the game never sees
+// more than one client. --no-bridge forces a direct connection.
+const noBridge = argv.includes("--no-bridge");
+let direct = argv.includes("--direct") || noBridge;
+const args = argv.filter((a) => a !== "--direct" && a !== "--no-bridge");
 const [cmd, ...rest] = args;
 
 const print = (v) => console.log(typeof v === "string" ? v : JSON.stringify(v, null, 2));
@@ -46,8 +50,17 @@ function readCode(parts) {
 
 // Connects lazily: tools that only read local data (search_api, abilities,
 // game scripts) work with the game closed.
+async function bridgeRunning() {
+  try {
+    const res = await fetch(`${BASE}/status`, { signal: AbortSignal.timeout(400) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function directCtx() {
-  const game = new Game();
+  const game = new Game({ host: process.env.CIV6_TUNER_HOST, port: Number(process.env.CIV6_TUNER_PORT || 4318) });
   const memory = new Memory();
   let snap = null;
   return {
@@ -60,10 +73,15 @@ async function directCtx() {
 }
 
 async function main() {
+  if (direct && !noBridge && cmd !== "inflight" && (await bridgeRunning())) {
+    console.error("(a bridge is running - routing through it)");
+    direct = false;
+  }
   switch (cmd) {
     case "inflight":
-      // Calls that started and never finished - after a crash, the suspects.
-      return print(unfinished(undefined, { limit: Number(rest[0] || 10) }));
+      // Calls that never settled, were lost, or timed out with an unknown
+      // outcome - after a crash, the suspects.
+      return print(suspects(undefined, { limit: Number(rest[0] || 10) }));
     case "status":
       return print(await http("GET", "/status"));
     case "summary":
