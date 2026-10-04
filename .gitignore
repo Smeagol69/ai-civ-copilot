@@ -1,7 +1,7 @@
 node_modules/
-# Per-machine runtime output. Abilities and knowledge.md ARE tracked: they are
+# Per-machine runtime output. Abilities, knowledge.md and the live API catalogs
+# ARE tracked: they are
 # what the copilot has taught itself, and the next agent should inherit them.
 companion/data/journal.jsonl
-companion/data/api-catalog/
 companion/data/inflight.jsonl
 companion/data/inflight.jsonl.1
