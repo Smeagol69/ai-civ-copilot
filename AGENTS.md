@@ -6,6 +6,9 @@ the Satisfactory copilot (`Documents\satisfactory`): Claude and Codex
 collaborate through git only, so anything the next agent needs must be in the
 code, its comments, or this file.
 
+**Repo:** <https://github.com/Smeagol69/ai-civ-copilot> (public, default branch
+`master`). Claude and Codex collaborate here through git only.
+
 ## Working agreement
 
 - **Only improve, extend, or optimise. Never remove a working feature unless
@@ -87,7 +90,7 @@ they are what the copilot taught itself, and the next agent inherits them.
 
 | Thing | Path / value |
 |---|---|
-| Repo | `%USERPROFILE%\Documents\civ6-copilot` (local git; no remote yet) |
+| Repo | `%USERPROFILE%\Documents\civ6-copilot`, origin <https://github.com/Smeagol69/ai-civ-copilot> |
 | Game | `D:\SteamLibrary\steamapps\common\Sid Meier's Civilization VI` (Steam app 289070, DX12 exe) |
 | Mods folder | `%USERPROFILE%\Documents\My Games\Sid Meier's Civilization VI\Mods\AICivCopilot` (a copy - re-run `scripts\install.ps1`) |
 | AppOptions.txt | `%LOCALAPPDATA%\Firaxis Games\Sid Meier's Civilization VI\AppOptions.txt` (original backed up as `.bak-aiciv`) |

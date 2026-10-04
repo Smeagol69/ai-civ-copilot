@@ -1,5 +1,7 @@
 # AI Civ Copilot
 
+<https://github.com/Smeagol69/ai-civ-copilot>
+
 An AI assistant inside your running game of Sid Meier's Civilization VI. Ask it
 about your empire, or tell it to change the game. It has full read and write
 access and grows its own toolset as it learns the game's API.
