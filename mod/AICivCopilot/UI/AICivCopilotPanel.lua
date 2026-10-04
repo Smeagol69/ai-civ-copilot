@@ -41,6 +41,7 @@ local TABS = {
 		{ key = "resources",     label = "Resources",       tip = "Strategic and luxury resources you have" },
 		{ key = "researchqueue", label = "Research queue",  tip = "Current research and civic, and what is queued after them" },
 		{ key = "recent",        label = "Recent changes",  tip = "The last changes the copilot made to the game" },
+		{ key = "standing",      label = "Victory standing", tip = "Where you and every known civ stand on each road to victory" },
 		{ key = "autobrief",     label = "Auto brief: off", localToggle = true, tip = "Post a Turn brief automatically at the start of each of your turns" },
 	} },
 	{ key = "city", label = "City", buttons = {
@@ -84,6 +85,7 @@ local TABS = {
 		{ key = "reveal_map",    label = "Reveal map",    confirm = true, tip = "Reveal the whole map (click twice; cannot be undone)" },
 	} },
 	{ key = "ai", label = "Ask AI", buttons = {
+		{ key = "strategy_ai",label = "Best strategy",   tip = "The AI picks your road to victory and the next moves, from your standing and trends" },
 		{ key = "advise",     label = "Advise me",       tip = "The AI reviews your empire and says what to do next" },
 		{ key = "build_ai",   label = "Plan production", tip = "The AI picks production for every city" },
 		{ key = "research_ai",label = "Plan research",   tip = "The AI plans your next techs" },
@@ -93,7 +95,15 @@ local TABS = {
 		{ key = "economy_ai", label = "Fix my economy",  tip = "The AI looks at gold, amenities, housing and trade" },
 		{ key = "explore_ai", label = "Learn a skill",   tip = "The AI discovers a new game function and saves it as an ability" },
 	} },
-	{ key = "abilities", label = "Abilities", buttons = {
+	{ key = "dig", label = "Dig", buttons = {
+		{ key = "dig_map",      label = "Map the API",   tip = "Free: map every game function against Firaxis' own scripts and find what can be changed" },
+		{ key = "dig_probe",    label = "Probe getters", tip = "Free, read-only: call safe getters live and record what they return" },
+		{ key = "dig_frontier", label = "Frontier",      tip = "The next features worth unlocking" },
+		{ key = "dig_status",   label = "Dig status",    tip = "How far the digging has got" },
+		{ key = "dig_ai",       label = "Dig deeper",    tip = "AI: prove one new game function and save it as an ability" },
+		{ key = "dig3_ai",      label = "Dig x3",        tip = "AI: unlock three new features" },
+	} },
+	{ key = "abilities", label = "Skills", buttons = {
 		{ key = "abilities_list", label = "Refresh list", tip = "Reload the copilot's saved abilities" },
 	}, dynamic = "abilities", dynamicTitle = "Saved abilities:" },
 };

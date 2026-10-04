@@ -54,6 +54,11 @@ export class GameFiles {
     return this.cache.get(file);
   }
 
+  // All lines of one file (cached).
+  lines(file) {
+    return this.#read(file);
+  }
+
   // pattern: plain text (case-insensitive) or /regex/flags. ext: ".lua" etc.
   search(pattern, { ext = ".lua", maxResults = 60, context = 0, pathFilter } = {}) {
     if (!this.available()) return { error: `game directory not found: ${this.gameDir} (set CIV6_GAME_DIR)` };

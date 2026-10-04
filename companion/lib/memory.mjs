@@ -14,6 +14,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DiscoveryMap } from "./discovery.mjs";
+import { History } from "./strategy.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_DATA_DIR = process.env.AICIV_DATA_DIR || path.join(HERE, "..", "data");
@@ -28,6 +30,15 @@ export class Memory {
     this.knowledgeFile = path.join(dir, "knowledge.md");
     this.journalFile = path.join(dir, "journal.jsonl");
     for (const d of [this.dir, this.abilitiesDir, this.catalogDir]) fs.mkdirSync(d, { recursive: true });
+  }
+
+  // The digger's map of the game's API and the per-turn standing history.
+  get discovery() {
+    return (this._discovery ??= new DiscoveryMap(this.dir));
+  }
+
+  get history() {
+    return (this._history ??= new History(this.dir));
   }
 
   // ------------------------------------------------------------ abilities

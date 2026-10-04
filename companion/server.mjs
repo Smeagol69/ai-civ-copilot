@@ -195,6 +195,11 @@ async function pollPanel() {
     await sendButtons("abilities", abilityButtons(memory));
   }
   state.panel = !!res.panel;
+  if (res.turn != null && res.turn !== state.lastHistoryTurn) {
+    // Once per turn: record everyone's standing, so trends build up over time.
+    state.lastHistoryTurn = res.turn;
+    game.standing().then((s) => s && !s.error && memory.history.record(s)).catch((err) => log(`standing: ${err.message}`));
+  }
   state.turn = res.turn ?? state.turn;
   for (const q of res.questions || []) await handlePanel(q);
 }

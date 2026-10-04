@@ -50,7 +50,7 @@
 	</Instance>
 
 	<Instance Name="TabButton">
-		<GridButton ID="Button" Size="82,24" Style="ButtonControl" String="Tab"/>
+		<GridButton ID="Button" Size="70,24" Style="ButtonControl" String="Tab"/>
 	</Instance>
 
 	<Instance Name="ButtonRow">

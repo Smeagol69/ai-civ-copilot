@@ -15,6 +15,8 @@
 import { performAction } from "./actions.mjs";
 import * as solve from "./solvers.mjs";
 import { UI_STATE } from "./game.mjs";
+import * as dig from "./discovery.mjs";
+import { analyzeStanding, formatStanding } from "./strategy.mjs";
 
 const r1 = (n) => (typeof n === "number" ? Math.round(n * 10) / 10 : n);
 const pretty = (t) =>
@@ -172,6 +174,9 @@ export const AI_PROMPTS = {
   war_ai: () => "Assess my military situation: threats, how defended each city is, and what I should build or move. Be specific.",
   economy_ai: () => "Look at my gold per turn, amenities, housing and trade routes and tell me the best fixes.",
   explore_ai: () => "Discover one useful game function you cannot use yet (search_api, search_game_scripts, inspect_api), prove it with a read-only probe, and save it as an ability with save_ability. Tell me what you added.",
+  dig_ai: () => "Dig: call dig_frontier, take the highest-leverage write you can safely prove, read its Firaxis call sites, prove it with a small revertible run_lua (read, change, read, revert, read), save it with save_ability (description says what it does and that it was verified live), and dig_mark it. If it cannot be done safely, dig_mark it blocked with the reason and try the next one. Report the new feature in two lines.",
+  dig3_ai: () => "Dig three times: repeat the dig procedure (dig_frontier -> read call sites -> revertible proof -> save_ability -> dig_mark) for three different frontier items, preferring different objects (unit, city, player). Report each new feature in one line.",
+  strategy_ai: () => "What is my best strategy to win from here? Use victory_standing and standing_trends, then the solvers. Name the road to victory, why it beats the others for me now, the rival to watch, and the next 5 concrete moves (cities, units, research, civics, policies). Do not change anything.",
   city_ai: (sel) => `${selText(sel)} What should this city build next, and why? Give the top 3 options with turns. Ask before setting it.`,
   unit_ai: (sel) => `${selText(sel)} What is the best use of this unit right now? Use unit_actions to see what it can do. Suggest the action and ask before doing it.`,
 };
@@ -321,6 +326,42 @@ export const HANDLERS = {
   },
   reveal_map: { run: (ctx) => action("Reveal map", "reveal_map", {})(ctx) },
 
+  standing: {
+    run: async (ctx) => {
+      const s = await ctx.game.standing();
+      ctx.memory.history.record(s);
+      return { text: formatStanding(analyzeStanding(s)) };
+    },
+  },
+  dig_map: {
+    run: async (ctx) => {
+      ctx.onProgress?.("Mapping the API...");
+      const run = dig.mapApi(ctx.memory, ctx.files, ctx.memory.discovery);
+      const s = dig.summary(ctx.memory.discovery);
+      return { text: `Mapped ${s.total} functions in ${run.ms} ms: ${s.writes} can change the game (${s.writesWithEvidence} with Firaxis examples, ${s.writesInFiraxisCheatPanels} used in Firaxis' cheat panels). ${s.proven} proven so far. Next: Probe getters, or Dig deeper.` };
+    },
+  },
+  dig_probe: {
+    run: async (ctx) => {
+      const r = await dig.probeBatch(ctx.game, ctx.memory.discovery, { limit: 120, onProgress: ctx.onProgress });
+      if (!r.probed) return { text: `Probe: ${r.note}` };
+      return { text: `Probed ${r.probed} getters live (${r.errors} refused a no-argument call). Probed so far: ${r.byStatus?.probed ?? 0} of ${r.total}.` };
+    },
+  },
+  dig_frontier: {
+    run: async (ctx) => {
+      const f = dig.frontier(ctx.memory.discovery, { limit: 10 });
+      if (!f.length) return { text: "The frontier is empty - run Map API first." };
+      return { text: ["Next features to unlock (highest leverage first):", ...f.map((e) => `- ${e.holder}:${e.method} [${e.state === "InGame" ? "UI" : "core"}] ${e.contexts.includes("tuner") ? "(Firaxis cheat panel)" : ""}`)].join("\n") };
+    },
+  },
+  dig_status: {
+    run: async (ctx) => {
+      const s = dig.summary(ctx.memory.discovery);
+      const by = Object.entries(s.byStatus || {}).map(([k, v]) => `${k} ${v}`).join(", ");
+      return { text: `Dig map: ${s.total} functions (${by}). ${s.writes} writers, ${s.writesWithEvidence} with Firaxis examples, ${s.proven} proven or saved, ${s.blocked} blocked. Abilities: ${ctx.memory.listAbilities().length}.` };
+    },
+  },
   abilities_list: {
     run: async (ctx) => {
       const items = abilityButtons(ctx.memory);

@@ -18,6 +18,8 @@ access and grows its own toolset as it learns the game's API.
   spawn/kill/heal units, XP, moves, terrain/feature/resource/improvement, reveal
   the map, meet players, war and peace.
 - **Do anything else:** run arbitrary Lua in any of the game's Lua states.
+- **Dig for new features:** map every function the game exposes, find what can change the game (Firaxis' own cheat panels show the way), prove it safely and save it as a new button - one click per discovery.
+- **Plan to win:** where you stand on every road to victory, your strongest road, the rival to watch, and trends turn by turn.
 - **Teach itself:** inspect live objects, catalog the whole API, search
   Firaxis' own scripts for real usage, then save working Lua as a permanent new
   ability. Verified API facts are remembered across sessions.

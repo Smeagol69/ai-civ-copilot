@@ -15,7 +15,7 @@ code, its comments, or this file.
   the owner explicitly asks.** The owner's standing rule; it covers the other
   agent's work as much as your own.
 - Branch by author: `claude/<task>`, `codex/<task>`. `master` is integration.
-- Run `cd companion; npm test` before you commit (64 tests as of 2026-10-04).
+- Run `cd companion; npm test` before you commit (79 tests as of 2026-10-04).
 - Every change gets its own commit with the reasoning in the message.
 - Finish with a handoff: what changed, what was verified live, what is open.
 
@@ -170,6 +170,30 @@ followed, which reproduced flaws in the first fixes):
   production uses `VALUE_REPLACE_AT 0` (a click), research/civics `mode front`.
 - War-starting attacks are refused unless `allowWar`; `make_peace` needs
   `experimental` (no Firaxis call shape exists to copy).
+
+## The digger and the strategist
+
+`lib/discovery.mjs` keeps a persistent map of every function the game exposes
+(`companion/data/discovery/map.json`, tracked): kind (read/write/action),
+leverage, Firaxis call sites, and a status that only moves forward
+(unknown -> evidenced -> probed -> proven -> ability, or blocked with a reason).
+
+- `dig_map` (offline, ~0.6 s): matches the live catalogs against every shipped
+  .lua/.ltp line. A call site only counts as evidence when its receiver looks
+  like the same kind of object (`ResourceGenerator.Create` is not evidence for
+  `Player:GetUnits:Create`). Writes used in Firaxis' Debug/*.ltp tuner (cheat)
+  panels rank highest. 2026-10-04: 2,458 functions, 298 writers, 219 with
+  evidence, 74 used in Firaxis' cheat panels.
+- `dig_probe` (live, read-only): only getters that Firaxis' scripts call with
+  zero arguments on the same kind of object, on objects the probe can reach.
+- `dig_frontier` / `dig_mark`: the AI proves the next high-leverage writer with
+  a revertible run_lua, saves it as an ability, and marks the map.
+- `lua/standing.lua` + `lib/strategy.mjs`: every known civ's numbers on each
+  enabled road to victory (WorldRankings call shapes), the player's strongest
+  road and the biggest threat (calculated); the bridge records one row per
+  turn in `data/history.jsonl` for `standing_trends`.
+- Panel: Dig tab (Map the API, Probe getters, Frontier, Dig status, Dig deeper,
+  Dig x3), Info > Victory standing, Ask AI > Best strategy.
 
 ## Traps that already cost time
 

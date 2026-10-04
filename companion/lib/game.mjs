@@ -121,6 +121,10 @@ export class Game {
     return this.script("snapshot", { includeBuildable, foreignRadius }, { timeoutMs: 60000 });
   }
 
+  async standing() {
+    return this.script("standing", {}, { timeoutMs: 30000 });
+  }
+
   async tiles(x, y, radius = 2, revealAll = false) {
     return this.script("plots", { x, y, radius, revealAll });
   }

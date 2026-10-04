@@ -11,6 +11,8 @@
 import { ACTIONS, performAction, validateAction } from "./actions.mjs";
 import { UI_STATE, CORE_STATE } from "./game.mjs";
 import * as solve from "./solvers.mjs";
+import * as dig from "./discovery.mjs";
+import { analyzeStanding } from "./strategy.mjs";
 
 const MAX_RESULT_CHARS = 60000;
 const SECTIONS = ["meta", "me", "techs", "civics", "cities", "units", "players", "visibleForeignUnits", "resources", "exploration", "gaps"];
@@ -133,6 +135,34 @@ export const STATIC_TOOLS = [
     }, ["name", "description", "state", "lua"]),
   },
   { name: "list_abilities", description: "All saved abilities with their descriptions, parameters and usage counts.", input_schema: obj() },
+  // ------------------------------------------------------------------ dig
+  {
+    name: "dig_map",
+    description: "Map the game's whole API (offline, about a second): every function from the live catalogs, matched against Firaxis' own scripts, classified read/write, scored by how much a new feature it could give. Writes used in Firaxis' cheat panels rank highest. Run after a game patch or a new scan_api.",
+    input_schema: obj(),
+  },
+  {
+    name: "dig_probe",
+    description: "Live, read-only: call a batch of zero-argument getters on real game objects - only those Firaxis' scripts call with zero arguments on the same kind of object - and record what they return.",
+    input_schema: obj({ limit: I("how many, default 120") }),
+  },
+  {
+    name: "dig_frontier",
+    description: "The next things worth turning into abilities: high-leverage functions (default: writes) with shipped call sites, not yet proven, blocked or saved. Each comes with its evidence (file, line, code).",
+    input_schema: obj({ limit: I("default 10"), holder: S("filter by object, e.g. Unit, City:GetBuildQueue"), kind: { type: "string", enum: ["write", "read", "action", "other"] } }),
+  },
+  {
+    name: "dig_mark",
+    description: "Record what you learned about one function in the dig map: status proven (tested live with revert), ability (saved as an ability), or blocked (not usable - say why). Always mark what you tried.",
+    input_schema: obj({ state: S("Lua state"), holder: S("holder as dig_frontier shows it"), method: S("method name"), status: { type: "string", enum: ["proven", "ability", "blocked"] }, note: S("what you found"), ability: S("ability name, if saved") }, ["state", "holder", "method", "status", "note"]),
+  },
+  { name: "dig_status", description: "How far the digging has got: counts by status and kind, writes with evidence, proven, blocked, recent runs.", input_schema: obj() },
+  {
+    name: "victory_standing",
+    description: "Where every known civ stands on each enabled road to victory (science, culture, diplomacy, religion, domination, score) from the game's own numbers, the player's strongest road, and the biggest threat (calculated).",
+    input_schema: obj(),
+  },
+  { name: "standing_trends", description: "Per-turn change of score, techs, civics, tourism, military and cities for every known civ, from the recorded history (calculated).", input_schema: obj({ turns: I("window, default 20") }) },
   {
     name: "remember_api_fact",
     description: "Record a verified fact about the game's API (e.g. 'Players[id]:GetCulture():SetCivic(idx,true) works in GameCore_Tuner, not InGame'). Facts are shown to you on every later request. Only record what a result proved.",
@@ -293,6 +323,26 @@ export async function dispatchTool(ctx, name, input = {}) {
         return { saved: false, reason: err.message };
       }
     }
+    case "dig_map":
+      return dig.summary((dig.mapApi(memory, files, memory.discovery), memory.discovery));
+    case "dig_probe":
+      return dig.probeBatch(game, memory.discovery, { limit: Math.min(input.limit ?? 120, 300), onProgress: ctx.onProgress });
+    case "dig_frontier":
+      return dig.frontier(memory.discovery, { limit: input.limit ?? 10, holder: input.holder, kind: input.kind || "write" });
+    case "dig_mark": {
+      const e = memory.discovery.update(input.state, input.holder, input.method, { status: input.status, note: input.note, ability: input.ability });
+      memory.discovery.save();
+      return { ok: true, entry: { state: e.state, holder: e.holder, method: e.method, status: e.status, notes: e.notes } };
+    }
+    case "dig_status":
+      return dig.summary(memory.discovery);
+    case "victory_standing": {
+      const s = await game.standing();
+      memory.history.record(s);
+      return analyzeStanding(s);
+    }
+    case "standing_trends":
+      return memory.history.trends(input.turns ?? 20);
     case "list_abilities":
       return memory.listAbilities().map((a) => ({
         name: a.name, kind: a.kind, state: a.state, description: a.description,
