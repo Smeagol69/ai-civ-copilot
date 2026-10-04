@@ -21,6 +21,7 @@ export const TAG_COMMAND = 3;
 export const TAG_HANDSHAKE = 4;
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 4318;
+const PORT_SCAN = Number(process.env.CIV6_TUNER_PORT_SCAN || 6);
 
 export function encodeFrame(tag, payload) {
   const body = Buffer.concat([Buffer.from(payload, "utf8"), Buffer.from([0])]);
@@ -94,6 +95,7 @@ export class TunerClient extends EventEmitter {
     super();
     this.host = host;
     this.port = port;
+    this.basePort = port;
     this.log = log;
     this.socket = null;
     this.decoder = new FrameDecoder();
@@ -112,15 +114,34 @@ export class TunerClient extends EventEmitter {
     return !!this.socket && !this.socket.destroyed;
   }
 
+  // The game does not always get its preferred port back. Observed live:
+  // after loading a save from the main menu the tuner re-bound on 4319, not
+  // 4318 (the old socket was still closing). So scan a short range and stick
+  // with whichever port answered.
   async connect(timeoutMs = 4000) {
+    const ports = [this.port, ...Array.from({ length: PORT_SCAN }, (_, i) => this.basePort + i).filter((p) => p !== this.port)];
+    let lastErr;
+    for (const port of ports) {
+      try {
+        await this.#connectTo(port, timeoutMs);
+        this.port = port;
+        return;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  }
+
+  async #connectTo(port, timeoutMs) {
     this.close();
     this.decoder = new FrameDecoder();
     this.inbox = [];
     await new Promise((resolve, reject) => {
-      const sock = net.createConnection({ host: this.host, port: this.port });
+      const sock = net.createConnection({ host: this.host, port });
       const timer = setTimeout(() => {
         sock.destroy();
-        reject(new Error(`timed out connecting to ${this.host}:${this.port}`));
+        reject(new Error(`timed out connecting to ${this.host}:${port}`));
       }, timeoutMs);
       sock.once("connect", () => {
         clearTimeout(timer);

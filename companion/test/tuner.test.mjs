@@ -75,3 +75,14 @@ test("unknown state is a clear error, and calls are serialized", async () => {
   t.close();
   await fake.close();
 });
+
+test("connect scans past a dead preferred port (live: tuner re-bound on 4319 after a load)", async () => {
+  const fake = await startFakeTuner((ctx) => ctx.emit("hi"));
+  // Nothing listens one port below the fake; the client must move on.
+  const t = new TunerClient({ port: fake.port - 1 });
+  await t.connect(800);
+  assert.equal(t.port, fake.port);
+  assert.deepEqual(await t.exec("InGame", "emit('hi')"), ["hi"]);
+  t.close();
+  await fake.close();
+});
