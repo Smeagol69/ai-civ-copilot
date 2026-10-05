@@ -53,7 +53,12 @@ Situations: every request starts with what is happening now (wars, deals on the 
 - Otherwise, the most valuable moves this turn, most urgent first.
 Be decisive: one recommended plan, not a menu. current_situation and recent_events give more detail.
 
-Answer style: the answer appears in a small in-game panel. Be direct and short. Plain text, short lines, simple "- " lists; no tables, no headings, no code blocks unless asked. Use city and unit names, and give coordinates as (x,y).
+Answer style: the answer appears in a small in-game panel the player reads mid-turn, so it must scan in seconds.
+- First line: the verdict or the single most important move, in one sentence.
+- Then at most 5 bullets ("- "), one action each, starting with a verb, under 20 words, naming the city or unit and its (x,y).
+- Group bullets under a short heading ending in ":" (e.g. "Now:", "Next turns:") only when there are two groups. A line starting with "!" marks a danger.
+- No preamble, no restating the question, no repeating unchanged advice from earlier answers ("unchanged" is enough), no nested bullets, no tables, no markdown.
+- Numbers only when they decide something.
 
 ${abilities.length ? `Saved abilities (also available as ability__<name> tools):\n${abilities.map((a) => `- ${a.name} [${a.kind}, ${a.state}]: ${a.description}`).join("\n")}\n` : "No abilities saved yet.\n"}
 ${knowledge ? `Verified API facts from earlier sessions:\n${knowledge}` : "No API facts recorded yet."}`;

@@ -13,6 +13,7 @@ import { UI_STATE, CORE_STATE } from "./game.mjs";
 import * as solve from "./solvers.mjs";
 import * as dig from "./discovery.mjs";
 import { analyzeStanding } from "./strategy.mjs";
+import { planTurn } from "./planner.mjs";
 
 const MAX_RESULT_CHARS = 60000;
 const SECTIONS = ["meta", "me", "techs", "civics", "cities", "units", "players", "visibleForeignUnits", "resources", "exploration", "gaps"];
@@ -172,6 +173,11 @@ export const STATIC_TOOLS = [
     name: "combat_preview",
     description: "The game's own combat simulation (the attack preview the unit panel shows): for one of the player's units, the predicted strengths, damage both ways, HP after, whether the target dies or the attacker dies, and whether it can attack right now - against given targets or every visible foreign combat unit within radius. Read-only. Use it before recommending or making any attack.",
     input_schema: obj({ attackerId: I("the attacking unit's id (local player)"), targets: { type: "array", items: { type: "object", properties: { player: { type: "integer" }, id: { type: "integer" } }, required: ["player", "id"] }, description: "specific targets (default: all visible within radius)" }, radius: I("search radius in tiles, default 6"), ranged: B("ranged/bombard attack (default: ranged if the unit has ranged strength)") }, ["attackerId"]),
+  },
+  {
+    name: "turn_plan",
+    description: "A complete to-do list for this turn built from the game's own numbers (free, deterministic): forced decisions (deals, wars, hostile units), favourable attacks by combat preview, research/civic to choose, eurekas in reach, idle cities with the game's pick, settlers with the best site, builders, units waiting, recruitable great people, envoys, and what blocks the end of turn. A good first call for 'what should I do this turn'.",
+    input_schema: obj(),
   },
   {
     name: "planning_info",
@@ -379,6 +385,11 @@ export async function dispatchTool(ctx, name, input = {}) {
       return game.advisor(input.what, input.settleCount);
     case "planning_info":
       return game.planning(input.what);
+    case "turn_plan": {
+      ctx.markStale?.();
+      const plan = await planTurn(game, await ctx.snapshot());
+      return { urgent: plan.urgent, todo: plan.todo, tips: plan.tips };
+    }
     case "district_spots":
       return game.districts(input.cityId, { districts: input.districts, top: input.top });
     case "combat_preview":

@@ -28,7 +28,7 @@ ExposedMembers.AICivCopilot = ExposedMembers.AICivCopilot or {};
 local Mailbox = ExposedMembers.AICivCopilot;
 Mailbox.outbox = Mailbox.outbox or {};
 Mailbox.events = Mailbox.events or {};   -- game events for the bridge (drained by its poll)
-Mailbox.version = 4;
+Mailbox.version = 5;
 m_NextId = Mailbox.nextId or 1;
 -- Requests the bridge has taken but not finished; a fresh panel (new game or
 -- reload) starts clean so the bridge never re-runs another game's requests.
@@ -41,6 +41,7 @@ if Mailbox.alerts == nil then Mailbox.alerts = true; end            -- pop up + 
 -- needs: "city" or "unit" = requires that selection; confirm = click twice.
 local TABS = {
 	{ key = "info", label = "Info", buttons = {
+		{ key = "plan_turn",     label = "Plan my turn",    tip = "Free: everything to do this turn, most urgent first - from the game's own advisor, combat preview and boosts" },
 		{ key = "overview",      label = "Overview",        tip = "Gold, science, culture, faith, research and civic at a glance" },
 		{ key = "production",    label = "Production",      tip = "What every city builds; idle, crowded and unhappy cities" },
 		{ key = "threats",       label = "Threats",         tip = "Visible foreign military near your territory, hostile first" },
@@ -57,7 +58,7 @@ local TABS = {
 		{ key = "eurekas",       label = "Eurekas",         tip = "Free: the next research and civic boosts and exactly how to trigger them" },
 		{ key = "great_people",  label = "Great people",    tip = "Free: who is available, their cost, your points, and what each does" },
 		{ key = "city_states",   label = "City-states",     tip = "Free: envoys to send, suzerains, and the trade deals in force" },
-		{ key = "autobrief",     label = "Turn brief: on",  localToggle = "autoBrief",  onLabel = "Turn brief: on",  offLabel = "Turn brief: off",  tip = "Free: post a Turn brief at the start of each of your turns" },
+		{ key = "autobrief",     label = "Auto plan: on",   localToggle = "autoBrief",  onLabel = "Auto plan: on",   offLabel = "Auto plan: off",   tip = "Free: post the turn plan at the start of each of your turns" },
 		{ key = "autoadvise",    label = "AI advisor: off", localToggle = "autoAdvise", onLabel = "AI advisor: on", offLabel = "AI advisor: off", tip = "AI: tell me what to do at the start of every turn (uses the AI each turn)" },
 		{ key = "alerts",        label = "Alerts: on",      localToggle = "alerts",     onLabel = "Alerts: on",     offLabel = "Alerts: off",     tip = "Pop up and ask the AI for the best response when war is declared or a deal is offered" },
 	} },
@@ -142,18 +143,64 @@ local COLOR_AI = "[COLOR:220,230,240,255]";
 local COLOR_DIM = "[COLOR:140,160,180,255]";
 local COLOR_ERR = "[COLOR:240,120,110,255]";
 local COLOR_OK = "[COLOR:140,210,140,255]";
+local COLOR_HEAD = "[COLOR:235,200,120,255]";   -- entry titles and section headings
+local COLOR_WARN = "[COLOR:245,160,90,255]";    -- "!" lines: needs attention
+local COLOR_BAD = "[COLOR:230,130,120,255]";
 
 local m_LastTicks = -1;
 local m_SinceChange = 0;
 local m_BridgeOnline = false;
 local m_Busy = 0;
 local m_Model = "";
+local m_LastEntry = nil;     -- the newest log entry
+local m_Titles = {};         -- request id -> what was asked (entry title)
 
 local function Escape(s)
 	s = tostring(s or "");
 	s = string.gsub(s, "\r", "");
 	s = string.gsub(s, "\n", "[NEWLINE]");
 	return s;
+end
+
+-- Make an answer easy to scan: headings in gold, "!" lines in orange,
+-- "- " lines as indented bullets, "+"/"-" sub-lines green/red, and no runs
+-- of blank lines. Square brackets would be read as markup, so they become
+-- round ones.
+local function Pretty(text)
+	text = tostring(text or "");
+	text = string.gsub(text, "\r", "");
+	text = string.gsub(text, "%[", "(");
+	text = string.gsub(text, "%]", ")");
+	local out = {};
+	local blank = false;
+	for line in string.gmatch(text .. "\n", "([^\n]*)\n") do
+		line = string.gsub(line, "%s+$", "");
+		if line == "" then
+			if not blank and #out > 0 then out[#out + 1] = ""; end
+			blank = true;
+		else
+			blank = false;
+			local sub = string.match(line, "^%s+[%+]%s*(.*)$");
+			local subNeg = string.match(line, "^%s+%-%s+(.*)$");
+			local bullet = string.match(line, "^%s*[%-%*]%s+(.*)$");
+			local warn = string.match(line, "^%s*!%s*(.*)$");
+			if sub then
+				out[#out + 1] = "      " .. COLOR_OK .. "+ " .. sub .. "[ENDCOLOR]";
+			elseif subNeg then
+				out[#out + 1] = "      " .. COLOR_BAD .. "- " .. subNeg .. "[ENDCOLOR]";
+			elseif warn then
+				out[#out + 1] = COLOR_WARN .. "[ICON_Bullet] " .. warn .. "[ENDCOLOR]";
+			elseif bullet then
+				out[#out + 1] = "  [ICON_Bullet] " .. bullet;
+			elseif string.len(line) <= 48 and string.match(line, ":$") then
+				out[#out + 1] = COLOR_HEAD .. line .. "[ENDCOLOR]";
+			else
+				out[#out + 1] = line;
+			end
+		end
+	end
+	while #out > 0 and out[#out] == "" do out[#out] = nil; end
+	return table.concat(out, "[NEWLINE]");
 end
 
 local function ScrollToEnd()
@@ -169,8 +216,10 @@ local function AddEntry(text)
 		m_Pending = {};
 	end
 	local inst = m_LogIM:GetInstance();
+	inst.Text:SetHide(false);
 	inst.Text:SetText(text);
 	m_Count = m_Count + 1;
+	m_LastEntry = inst;
 	ScrollToEnd();
 	return inst;
 end
@@ -229,10 +278,12 @@ local function Queue(kind, text, key)
 	Mailbox.nextId = m_NextId;
 	table.insert(Mailbox.outbox, { id = id, kind = kind, text = text, key = key, sel = Selection(), turn = Game.GetCurrentGameTurn() });
 	m_Busy = m_Busy + 1;
+	m_Titles[id] = text;
+	local title = (kind == "ask") and (COLOR_YOU .. Escape(text) .. "[ENDCOLOR]") or (COLOR_HEAD .. Escape(text) .. "[ENDCOLOR]");
 	if m_BridgeOnline then
-		m_Pending[id] = AddEntry(COLOR_DIM .. "working...[ENDCOLOR]");
+		m_Pending[id] = AddEntry(title .. "  " .. COLOR_DIM .. "working...[ENDCOLOR]");
 	else
-		m_Pending[id] = AddEntry(COLOR_DIM .. "queued - it will run when the bridge connects[ENDCOLOR]");
+		m_Pending[id] = AddEntry(title .. "  " .. COLOR_DIM .. "queued - runs when the bridge connects[ENDCOLOR]");
 	end
 	RefreshStatus();
 	return id;
@@ -255,7 +306,6 @@ local function OnButton(entry, button)
 		end
 		m_Confirm = nil;
 	end
-	AddEntry(COLOR_YOU .. "You:[ENDCOLOR] [" .. entry.label .. "]");
 	Queue("quick", entry.label, entry.key);
 end
 
@@ -263,7 +313,6 @@ local function Send()
 	local text = Controls.InputBox:GetText();
 	if text == nil or text == "" then return; end
 	Controls.InputBox:SetText("");
-	AddEntry(COLOR_YOU .. "You:[ENDCOLOR] " .. Escape(text));
 	Queue("ask", text);
 end
 
@@ -347,8 +396,31 @@ local function BuildTabs()
 end
 
 -- Dynamic button groups pushed by the bridge.
+local function ApplyTabs(items)
+	for _, t in ipairs(items) do
+		if type(t) == "table" and t.key and type(t.buttons) == "table" then
+			local tab = nil;
+			for _, existing in ipairs(TABS) do if existing.key == t.key then tab = existing; end end
+			if tab == nil then
+				tab = { key = t.key, label = t.label or t.key, buttons = {} };
+				table.insert(TABS, tab);
+			end
+			-- Keep this panel's own toggles; take every other button from the bridge.
+			local merged = {};
+			for _, b in ipairs(t.buttons) do merged[#merged + 1] = b; end
+			for _, b in ipairs(tab.buttons) do if b.localToggle then merged[#merged + 1] = b; end end
+			tab.buttons = merged;
+			if t.label then tab.label = t.label; end
+			if t.dynamic then tab.dynamic = t.dynamic; tab.dynamicTitle = t.dynamicTitle; end
+		end
+	end
+	BuildTabs();
+	if not Controls.Panel:IsHidden() then ShowTab(m_Tab); end
+end
+
 local function OnButtons(group, items)
 	if type(items) ~= "table" then return; end
+	if group == "tabs" then ApplyTabs(items); return; end
 	m_Dynamic[group] = items;
 	if m_Tab and m_Tab.dynamic == group and not Controls.Panel:IsHidden() then ShowTab(m_Tab); end
 end
@@ -361,25 +433,30 @@ local function OnReply(id, kind, text)
 		RefreshStatus();
 		return;
 	end
+	local titleText = m_Titles[id];
+	local title = titleText and (COLOR_HEAD .. Escape(titleText) .. "[ENDCOLOR]") or (COLOR_HEAD .. "Copilot[ENDCOLOR]");
 	if kind == "status" then
 		local inst = m_Pending[id];
 		if inst then
-			inst.Text:SetText(COLOR_DIM .. Escape(text) .. "[ENDCOLOR]");
+			inst.Text:SetText(title .. "  " .. COLOR_DIM .. Escape(text) .. "[ENDCOLOR]");
 			ScrollToEnd();
 		end
 		RefreshStatus(Escape(text));
 		return;
 	end
+	-- The answer takes the place of its "working" line when nothing came after
+	-- it; otherwise that line is hidden and the answer goes to the bottom.
+	local body = (kind == "error") and (COLOR_ERR .. Escape(text) .. "[ENDCOLOR]") or Pretty(text);
 	local inst = m_Pending[id];
-	if inst then
-		inst.Text:SetText("");
-		m_Pending[id] = nil;
-	end
+	m_Pending[id] = nil;
+	m_Titles[id] = nil;
 	if m_Busy > 0 and id ~= 0 then m_Busy = m_Busy - 1; end
-	if kind == "error" then
-		AddEntry(COLOR_ERR .. Escape(text) .. "[ENDCOLOR]");
+	if inst and inst == m_LastEntry then
+		inst.Text:SetText(title .. "[NEWLINE]" .. body);
+		ScrollToEnd();
 	else
-		AddEntry(COLOR_AI .. "Copilot:[ENDCOLOR] " .. Escape(text));
+		if inst then inst.Text:SetHide(true); end
+		AddEntry(title .. "[NEWLINE]" .. body);
 	end
 	RefreshStatus();
 	if Controls.Panel:IsHidden() then
@@ -589,11 +666,14 @@ end
 
 local function OnTurnBegin()
 	local turn = Game.GetCurrentGameTurn();
+	-- The game can fire this twice in one turn; act once.
+	if Mailbox.lastTurnBegin == turn then return; end
+	Mailbox.lastTurnBegin = turn;
 	Record("turn", "Turn " .. turn .. " began.", { blocking = BlockerName() });
 	if Mailbox.autoBrief or Mailbox.autoAdvise then
-		AddEntry(COLOR_DIM .. "Turn " .. turn .. "[ENDCOLOR]");
+		AddEntry(COLOR_DIM .. "---------------  Turn " .. turn .. "  ---------------[ENDCOLOR]");
 	end
-	if Mailbox.autoBrief then Queue("quick", "Turn brief", "turnbrief"); end
+	if Mailbox.autoBrief then Queue("quick", "Turn plan", "plan_turn"); end
 	if Mailbox.autoAdvise then Queue("quick", "Turn advice", "turnadvice"); end
 end
 

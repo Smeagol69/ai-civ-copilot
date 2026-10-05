@@ -81,7 +81,7 @@ test("every action button sends a typed action that passes validation", async ()
   const game = new Game({ port: fake.port, trace: false });
   const memory = new Memory(fs.mkdtempSync(path.join(os.tmpdir(), "aiciv-")));
   const ctx = { game, memory, snapshot: async () => SNAP, markStale() {}, onProgress() {} };
-  const actionKeys = Object.keys(HANDLERS).filter((k) => !["overview", "production", "threats", "idle", "rivals", "turnbrief", "resources", "researchqueue", "recent", "city_details", "city_tiles", "tile_info", "abilities_list", "standing", "events", "situation", "game_advisor", "city_advice", "settle_spots", "builder_advice", "attack_odds", "eurekas", "great_people", "city_states", "district_spots", "dig_map", "dig_probe", "dig_frontier", "dig_status"].includes(k));
+  const actionKeys = Object.keys(HANDLERS).filter((k) => !["overview", "production", "threats", "idle", "rivals", "turnbrief", "resources", "researchqueue", "recent", "city_details", "city_tiles", "tile_info", "abilities_list", "standing", "events", "situation", "game_advisor", "city_advice", "settle_spots", "builder_advice", "attack_odds", "eurekas", "great_people", "city_states", "district_spots", "plan_turn", "dig_map", "dig_probe", "dig_frontier", "dig_status"].includes(k));
   for (const key of actionKeys) {
     const before = seen.length;
     const r = await handlePanelRequest(ctx, { key, sel: SEL });
@@ -130,4 +130,25 @@ test("action results read as one plain line", () => {
   assert.equal(formatAction("+100 Gold", { ok: true, before: 32.51, after: 132.51 }), "+100 Gold: done (32.5 -> 132.5).");
   assert.equal(formatAction("Finish build", { ok: false, reason: "city is not producing anything" }), "Finish build: not done - city is not producing anything.");
   assert.match(formatAction("End turn", { ok: true, verified: { ok: true, turnNow: 272 } }), /now turn 272/);
+});
+
+test("the pushed tab catalog matches the panel and every button has a handler", async () => {
+  const { TABS } = await import("../lib/catalog.mjs");
+  const catalog = TABS.flatMap((t) => t.buttons.map((b) => b.key));
+  assert.equal(new Set(catalog).size, catalog.length, "no duplicate keys");
+  const missing = catalog.filter((k) => !HANDLERS[k] && !AI_PROMPTS[k]);
+  assert.deepEqual(missing, [], "catalog buttons without a handler");
+  const panelOnly = panelButtonKeys().filter((k) => !catalog.includes(k));
+  assert.deepEqual(panelOnly, [], "buttons in the panel's built-in tabs but not in the pushed catalog");
+  for (const t of TABS) for (const b of t.buttons) {
+    assert.ok(b.label.length <= 18, `label too long for a button: ${b.label}`);
+    if (b.needs) assert.ok(["city", "unit"].includes(b.needs), `${b.key} needs ${b.needs}`);
+  }
+});
+
+test("answers are tidied for the panel: no markdown, flat bullets, no markup brackets", async () => {
+  const { tidyAnswer, tidyReport } = await import("../lib/tidy.mjs");
+  const a = tidyAnswer("Copilot: **Hold.**\n\n\n\n## Now\n* Fortify `Warrior` at (15,12)\n   - nested\n2. Build [Monument]\n");
+  assert.equal(a, "Hold.\n\nNow:\n- Fortify Warrior at (15,12)\n- nested\n- Build (Monument)");
+  assert.equal(tidyReport("Site: (1,2)\n  + water\n  - hills\n\n\n\n[x]"), "Site: (1,2)\n  + water\n  - hills\n\n(x)");
 });

@@ -21,6 +21,8 @@ import { runTool, allTools } from "./lib/tools.mjs";
 import { empireSummary } from "./lib/solvers.mjs";
 import { suspects } from "./lib/inflight.mjs";
 import { handlePanelRequest, abilityButtons, AI_PROMPTS } from "./lib/panel.mjs";
+import { TABS } from "./lib/catalog.mjs";
+import { tidyAnswer, tidyReport } from "./lib/tidy.mjs";
 
 const PORT = Number(process.env.AICIV_PORT || 8737);
 const POLL_MS = Number(process.env.AICIV_POLL_MS || 500);
@@ -88,17 +90,12 @@ async function sendButtons(group, items) {
   }
 }
 
-function plain(text) {
-  return String(text || "")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/^#{1,6}\s*/gm, "")
-    .replace(/^\s*[*]\s+/gm, "- ");
-}
-
-async function reply(id, kind, text) {
+// AI answers get the full tidy (markdown out, flat bullets); the free
+// reports are already laid out and only get blank-line cleanup.
+async function reply(id, kind, text, { ai = false } = {}) {
+  const clean = kind === "answer" && ai ? tidyAnswer(text) : tidyReport(text);
   try {
-    await game.lua(UI_STATE, REPLY_LUA, { params: { id, kind, text: plain(text).slice(0, 12000) } });
+    await game.lua(UI_STATE, REPLY_LUA, { params: { id, kind, text: clean.slice(0, 12000) } });
   } catch (err) {
     log(`panel reply failed: ${err.message}`);
   }
@@ -141,7 +138,7 @@ async function runAiQueue() {
       await reply(job.id, "status", "Thinking...");
       try {
         const text = await job.run((p) => reply(job.id, "status", p));
-        await reply(job.id, "answer", text);
+        await reply(job.id, "answer", text, { ai: true });
         if (job.refreshAbilities) await sendButtons("abilities", abilityButtons(memory));
       } catch (err) {
         state.lastError = err.message;
@@ -152,6 +149,9 @@ async function runAiQueue() {
     aiRunning = false;
   }
 }
+
+const PER_TURN = new Set(["turnbrief", "turnadvice", "plan_turn"]);
+const doneForTurn = new Map(); // key -> { turn, at } of the last run
 
 async function handlePanel(q) {
   const kind = q.kind || "ask";
@@ -172,11 +172,29 @@ async function handlePanel(q) {
   // A button.
   const key = String(q.key || "");
   log(`panel button #${q.id}: ${key}`);
+  // The game can fire the start-of-turn event twice; the automatic per-turn
+  // requests run once per game turn (the AI one costs).
+  // (Only a repeat within 30 s: pressing the button again later still works.)
+  if (PER_TURN.has(key) && q.turn != null) {
+    const last = doneForTurn.get(key);
+    if (last && last.turn === q.turn && Date.now() - last.at < 30000) {
+      await reply(q.id, "answer", `(Turn ${q.turn} is already covered above.)`);
+      return;
+    }
+    doneForTurn.set(key, { turn: q.turn, at: Date.now() });
+  }
   if (AI_PROMPTS[key]) {
+    // The same AI button pressed again while the first is still waiting:
+    // one answer is enough (and costs once).
+    if (aiQueue.some((j) => j.key === key)) {
+      await reply(q.id, "answer", "Already queued - the answer will appear with the first press.");
+      return;
+    }
     const ahead = aiQueue.length + (aiRunning ? 1 : 0);
     if (ahead) await reply(q.id, "status", `Queued behind ${ahead} AI request(s)...`);
     aiQueue.push({
       id: q.id,
+      key,
       refreshAbilities: ["explore_ai", "dig_ai", "dig3_ai"].includes(key),
       run: async (onProgress) => {
         const res = await handlePanelRequest(makeCtx(onProgress), q, { ask: (question) => answer("panel", question, onProgress) });
@@ -293,6 +311,8 @@ async function pollPanel() {
     }
     // Tell the panel who is answering, and give it the saved abilities.
     await reply(0, "hello", DEFAULT_MODEL);
+    // Panel v5+ rebuilds its tabs from this, so new buttons need no reload.
+    await sendButtons("tabs", TABS);
     await sendButtons("abilities", abilityButtons(memory));
   }
   state.panel = live;

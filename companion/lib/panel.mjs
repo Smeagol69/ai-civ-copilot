@@ -18,6 +18,7 @@ import { UI_STATE } from "./game.mjs";
 import * as dig from "./discovery.mjs";
 import { analyzeStanding, formatStanding } from "./strategy.mjs";
 import { formatEvents, formatSituation } from "./events.mjs";
+import { planTurn } from "./planner.mjs";
 
 const r1 = (n) => (typeof n === "number" ? Math.round(n * 10) / 10 : n);
 const pretty = (t) =>
@@ -133,7 +134,7 @@ export function formatCombat(c) {
   const lines = [head];
   for (const r of c.results.slice(0, 8)) {
     const outcome = r.kills ? "KILLS it" : r.dies ? "YOUR UNIT DIES" : `it ends at ${r.defenderHpAfter} hp, you at ${r.attackerHpAfter} hp`;
-    lines.push(`- ${pretty(r.type)} (${r.owner || `player ${r.player}`}) at (${r.x},${r.y}), ${r.distance} away: ${r.attackerStrength} vs ${r.defenderStrength}, deal ${r.damageToDefender} / take ${r.damageToAttacker} - ${outcome}${r.canAttackNow ? " [can attack now]" : ""}`);
+    lines.push(`- ${pretty(r.type)} (${r.owner || `player ${r.player}`}) at (${r.x},${r.y}), ${r.distance} away: ${r.attackerStrength} vs ${r.defenderStrength}, deal ${r.damageToDefender} / take ${r.damageToAttacker} - ${outcome}${r.canAttackNow ? " (can attack now)" : ""}`);
   }
   lines.push("(The game's own combat preview; actual results vary a little.)");
   return lines.join("\n");
@@ -438,6 +439,13 @@ export const HANDLERS = {
   game_advisor: { run: async (ctx) => ({ text: formatAdvisor(await ctx.game.advisor(["tech", "civic", "build", "settle", "builder"])) }) },
   city_advice: { needs: "city", run: async (ctx, sel) => ({ text: formatAdvisor(await ctx.game.advisor(["build"]), { cityId: sel.cityId }) }) },
   settle_spots: { run: async (ctx) => ({ text: formatAdvisor(await ctx.game.advisor(["settle"]), { settleOnly: true }) }) },
+  plan_turn: {
+    run: async (ctx) => {
+      ctx.onProgress?.("Reading the turn...");
+      ctx.markStale();
+      return { text: (await planTurn(ctx.game, await ctx.snapshot())).text };
+    },
+  },
   eurekas: { run: async (ctx) => ({ text: formatBoosts(await ctx.game.planning(["boosts"])) }) },
   great_people: { run: async (ctx) => ({ text: formatGreatPeople(await ctx.game.planning(["greatpeople"])) }) },
   city_states: { run: async (ctx) => ({ text: formatEnvoys(await ctx.game.planning(["envoys", "deals"])) }) },

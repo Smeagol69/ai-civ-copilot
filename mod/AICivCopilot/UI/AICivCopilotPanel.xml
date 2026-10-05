@@ -32,7 +32,7 @@
 			<!-- Conversation -->
 			<ScrollPanel ID="LogScroll" Anchor="L,T" Offset="10,198" Size="578,384" Vertical="1" AutoScrollBar="1">
 				<ScrollBar Style="Slider_Blue" Offset="-7,0" Anchor="R,T"/>
-				<Stack ID="LogStack" Anchor="L,T" StackGrowth="Bottom" Padding="8"/>
+				<Stack ID="LogStack" Anchor="L,T" StackGrowth="Bottom" Padding="14"/>
 			</ScrollPanel>
 
 			<!-- Free-text question for the AI -->
@@ -46,7 +46,7 @@
 	</Box>
 
 	<Instance Name="LogEntry">
-		<Label ID="Text" Anchor="L,T" Style="FontNormal14" WrapWidth="556" Color0="230,230,230,255"/>
+		<Label ID="Text" Anchor="L,T" Style="FontNormal14" WrapWidth="556" LeadingOffset="2" Color0="225,230,235,255"/>
 	</Instance>
 
 	<Instance Name="TabButton">
