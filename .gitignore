@@ -7,3 +7,5 @@ companion/data/inflight.jsonl
 companion/data/inflight.jsonl.1
 companion/data/history*.jsonl
 companion/data/events.jsonl
+companion/data/bridge.log*
+companion/data/bridge.err.log*

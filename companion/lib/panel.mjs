@@ -496,10 +496,21 @@ export const HANDLERS = {
   },
 };
 
+// A button holds about 20 characters. Shorten at word boundaries: drop a
+// leading verb (Change/Set/Add...), then filler words, then trailing words.
+export function shortLabel(name, max = 20) {
+  let words = pretty(name).split(" ");
+  const fits = () => words.join(" ").length <= max;
+  if (!fits() && words.length > 2 && /^(Change|Set|Get|Add|Make|Give|Grant|Show|List)$/.test(words[0])) words = words.slice(1);
+  if (!fits()) words = words.filter((w, i) => i === 0 || !/^(By|Of|The|For|And|To|In|On|A)$/.test(w));
+  while (!fits() && words.length > 1) words = words.slice(0, -1);
+  return words.join(" ").slice(0, max);
+}
+
 export function abilityButtons(memory) {
   return memory.listAbilities().map((a) => ({
     key: `ability:${a.name}`,
-    label: pretty(a.name).slice(0, 22),
+    label: shortLabel(a.name),
     tip: `${a.description}${a.required?.length ? ` (uses the selection for: ${a.required.join(", ")})` : ""}`,
     confirm: a.kind && a.kind !== "query" ? true : undefined,
   }));

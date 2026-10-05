@@ -155,6 +155,69 @@ followed, which reproduced flaws in the first fixes):
   anyway); parallel agents may only do offline work (code, shipped scripts,
   saved catalogs).
 
+## The second crash (2026-10-04 evening, multiplayer) - read this too
+
+The owner was playing **internet multiplayer with four other people** (Steam
+lobby, Multiplayer Helper mod; `net_connection_debug.log` names them). The
+Dig AI proved abilities with direct GameCore edits (+/-20 production, a unit
+ability added and removed). In multiplayer every player runs their own copy
+of the simulation, so those edits desync the game even when reverted. At
+20:35 the Multiplayer Helper disconnected to the main menu; the AI kept
+running Lua; a stale state index sent its `GameCore_Tuner` code into the
+front-end `My2K` state 15 times; at 20:36:44, while rejoining the lobby
+("join game successful" was the last line), the game crashed (access
+violation reading 0x0). The edits and the forced rejoin are the likely chain;
+not proven.
+
+What changed:
+- `tuner.mjs`: the state list is re-read when older than `STATE_TTL_MS` (3 s)
+  and after any "Invalid Lua State"; a reply printed by a different state than
+  the one asked for throws `wrong-state` (verified: every reply in Lua.log is
+  prefixed with its exact state name).
+- `game.mjs`: every call into the game - `Game.lua`, `Game.script` and typed
+  actions (`runActionLua`) - goes through `Game.exec`, which checks two locks.
+  `game.paused` (set by the poll while the game loads, leaves or rejoins)
+  refuses every call. `game.coreLocked` (`lib/locks.mjs`: network or Play By
+  Cloud multiplayer with more than one human, from
+  `GameConfiguration.IsNetworkMultiplayer()` / `IsPlayByCloud()` /
+  `GetHumanPlayerCount()`) allows only the UI states `InGame` and
+  `AICivCopilotPanel` - GameCore_Tuner, gameplay scripts such as
+  WorldCongress and other mods' script states can all edit the simulation.
+  It starts locked until the first poll and relocks on every game
+  transition. Only the poll passes `force: true`. The AI loop checks
+  `ctx.stopReason()` each round.
+- `tuner.mjs` fails closed: if the game does not answer the state query, no
+  command is sent; a nonce-tagged line from another state throws `wrong-state`
+  at once, even when the misrouted code errored there.
+- An adversarial review (27 agents, 14 confirmed findings) found that typed
+  actions had bypassed both locks and that the wrong-state check missed the
+  error case; `test/tiers-safety.test.mjs` covers each finding, and each test
+  was checked to fail with the bug put back.
+- In multiplayer with other people: no edits, no digging, no map reveal;
+  advice and the player's own normal moves only. This is also about fairness:
+  edits there would be cheating against real players.
+- Never test edits in the owner's multiplayer games. Use a single-player save.
+
+## Model tiers
+
+- Advisor (every preset AI button except the dig ones, the per-turn advisor,
+  alerts, ordinary questions): `AICIV_ADVISOR_MODEL`, default
+  `claude-haiku-4-5-20251001`, no effort param, 6k max tokens, 16 rounds,
+  4 history turns, no digging tools, run_lua only for free-text questions.
+- Dig (`explore_ai`, `dig_ai`, `dig3_ai`, and free text matching dig intent):
+  `AICIV_DIG_MODEL` (or `AICIV_MODEL`), default `claude-fable-5-1`, effort
+  high, every tool, fallback beta.
+- A 400 naming a param (effort, fallbacks, eager_input_streaming,
+  cache_control) drops it for that model and retries - Haiku 4.5's support for
+  these was not live-tested because the account was out of credits at the time.
+- "Credit balance is too low" becomes a plain panel message and AI requests
+  answer immediately for 5 minutes instead of failing one by one.
+
+The bridge now runs detached: `scripts\start-bridge-background.ps1` (log in
+`companion\data\bridge.log`), stop with `scripts\stop-bridge.ps1`. A
+background tool command dies at its 2-hour limit, which is what stopped it
+before.
+
 ## How actions are kept honest
 
 - Each play action returns `verifyArgs`; `performAction` hands them to its

@@ -12,16 +12,17 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Game, UI_STATE } from "./lib/game.mjs";
+import { Game, UI_STATE, PANEL_STATE } from "./lib/game.mjs";
 import { Memory } from "./lib/memory.mjs";
 import { GameFiles } from "./lib/gamefiles.mjs";
-import { ask, makeClient, DEFAULT_MODEL } from "./lib/agent.mjs";
+import { ask, makeClient, DEFAULT_MODEL, ADVISOR_MODEL, DIG_MODEL, tierFor, AiUnavailable } from "./lib/agent.mjs";
 import { performAction } from "./lib/actions.mjs";
 import { runTool, allTools } from "./lib/tools.mjs";
 import { empireSummary } from "./lib/solvers.mjs";
 import { suspects } from "./lib/inflight.mjs";
 import { handlePanelRequest, abilityButtons, AI_PROMPTS } from "./lib/panel.mjs";
 import { TABS } from "./lib/catalog.mjs";
+import { UNKNOWN_LOCK, multiplayerLock } from "./lib/locks.mjs";
 import { tidyAnswer, tidyReport } from "./lib/tidy.mjs";
 
 const PORT = Number(process.env.AICIV_PORT || 8737);
@@ -46,6 +47,7 @@ function makeCtx(onProgress) {
   return {
     game, memory, files, onProgress,
     markStale() { stale = true; },
+    stopReason() { return game.paused; },
     async snapshot() {
       if (!stale && snapCache && Date.now() - snapAt < SNAPSHOT_TTL_MS) return snapCache;
       snapCache = await game.snapshot();
@@ -62,8 +64,12 @@ function makeCtx(onProgress) {
 // their final reply, so a bridge restart can pick them up again with
 // P.recover) and drains the game events the panel recorded.
 const POLL_LUA = `
+local mp, cloud, humans = false, false, nil
+pcall(function() mp = GameConfiguration.IsNetworkMultiplayer() end)
+pcall(function() cloud = GameConfiguration.IsPlayByCloud() end)
+pcall(function() humans = GameConfiguration.GetHumanPlayerCount() end)
 local m = ExposedMembers and ExposedMembers.AICivCopilot
-if m == nil then emitJson({ panel = false }) return end
+if m == nil then emitJson({ panel = false, mp = mp, cloud = cloud, humans = humans }) return end
 local q = m.outbox or {}
 m.outbox = {}
 m.taken = m.taken or {}
@@ -73,13 +79,13 @@ for _, r in ipairs(q) do if r.id and r.id ~= 0 then m.taken[r.id] = r end end
 local ev = m.events or {}
 m.events = {}
 m.bridgeTicks = (m.bridgeTicks or 0) + 1
-emitJson({ panel = true, version = m.version, questions = q, recovered = recovered, events = ev, turn = Game.GetCurrentGameTurn() })
+emitJson({ panel = true, version = m.version, questions = q, recovered = recovered, events = ev, turn = Game.GetCurrentGameTurn(), mp = mp, cloud = cloud, humans = humans })
 `;
 const REPLY_LUA = `
 local m = ExposedMembers and ExposedMembers.AICivCopilot
 if m and m.taken and (P.kind == "answer" or P.kind == "error") then m.taken[P.id] = nil end
 LuaEvents.AICivCopilot_Reply(P.id, P.kind, P.text)`;
-const PANEL_STATE = "AICivCopilotPanel";
+
 const BUTTONS_LUA = `LuaEvents.AICivCopilot_Buttons(P.group, P.items)`;
 
 async function sendButtons(group, items) {
@@ -101,7 +107,16 @@ async function reply(id, kind, text, { ai = false } = {}) {
   }
 }
 
-async function answer(source, question, onProgress) {
+game.coreLocked = UNKNOWN_LOCK;
+const DIG_KEYS = new Set(["explore_ai", "dig_ai", "dig3_ai"]);
+
+// When the API says the account cannot be used (no credits, bad key), AI
+// requests answer at once for a few minutes instead of failing one by one.
+let aiBlock = null; // { until, lastTry, message }
+const AI_BLOCK_MS = 5 * 60 * 1000;
+const AI_PROBE_MS = 30 * 1000;
+
+async function answer(source, question, onProgress, { tier = "advisor", freeText = false } = {}) {
   if (!client) client = makeClient();
   const history = histories.get(source) || [];
   if (/^\s*(new|reset|clear)\s*$/i.test(question)) {
@@ -113,11 +128,13 @@ async function answer(source, question, onProgress) {
   const started = Date.now();
   try {
     stale = true;
-    const res = await ask({ client, question, history, ctx: makeCtx(onProgress), log });
+    log(`asking ${tier} (${tier === "dig" ? DIG_MODEL : ADVISOR_MODEL})`);
+    const res = await ask({ client, tier, freeText, question, history, ctx: makeCtx(onProgress), log });
     history.push({ question, answer: res.answer });
     histories.set(source, history.slice(-12));
-    memory.record({ type: "question", source, question, answer: res.answer, usage: res.usage, ms: Date.now() - started });
-    log(`answered in ${((Date.now() - started) / 1000).toFixed(1)}s, ${res.usage.toolCalls} tool calls`);
+    memory.record({ type: "question", source, tier, question, answer: res.answer, usage: res.usage, ms: Date.now() - started });
+    aiBlock = null; // the account works
+    log(`answered by ${(res.usage.models?.length ? res.usage.models : [res.usage.model]).join(", ")} in ${((Date.now() - started) / 1000).toFixed(1)}s, ${res.usage.toolCalls} tool calls, ${res.usage.input} in + ${res.usage.cacheWrite} cache-write / ${res.usage.output} out (${res.usage.cacheRead} cached)`);
     return res;
   } finally {
     state.busy = false;
@@ -135,6 +152,13 @@ async function runAiQueue() {
   try {
     while (aiQueue.length) {
       const job = aiQueue.shift();
+      // While blocked, answer at once - but let one request through every
+      // 30 s, so adding credits takes effect without waiting the full block.
+      if (aiBlock && Date.now() < aiBlock.until && Date.now() - aiBlock.lastTry < AI_PROBE_MS) {
+        await reply(job.id, "error", aiBlock.message);
+        continue;
+      }
+      if (aiBlock) aiBlock.lastTry = Date.now();
       await reply(job.id, "status", "Thinking...");
       try {
         const text = await job.run((p) => reply(job.id, "status", p));
@@ -142,7 +166,12 @@ async function runAiQueue() {
         if (job.refreshAbilities) await sendButtons("abilities", abilityButtons(memory));
       } catch (err) {
         state.lastError = err.message;
-        await reply(job.id, "error", `Copilot error: ${err.message}`);
+        if (err instanceof AiUnavailable) {
+          if (err.code === "no-credits" || err.code === "auth") aiBlock = { until: Date.now() + AI_BLOCK_MS, lastTry: Date.now(), message: err.message };
+          await reply(job.id, "error", err.message);
+        } else {
+          await reply(job.id, "error", `Copilot error: ${readableError(err)}`);
+        }
       }
     }
   } finally {
@@ -152,6 +181,15 @@ async function runAiQueue() {
 
 const PER_TURN = new Set(["turnbrief", "turnadvice", "plan_turn"]);
 const doneForTurn = new Map(); // key -> { turn, at } of the last run
+
+const shortModel = (m) => String(m).replace(/^claude-/, "").replace(/-\d{8}$/, "");
+
+// A raw API error is a JSON blob; the panel shows only its message.
+function readableError(err) {
+  const msg = String(err?.error?.error?.message || err?.message || err);
+  const inner = /"message":"([^"]+)"/.exec(msg);
+  return (inner ? inner[1] : msg).slice(0, 300);
+}
 
 async function handlePanel(q) {
   const kind = q.kind || "ask";
@@ -165,7 +203,11 @@ async function handlePanel(q) {
     log(`panel question #${q.id}: ${text}`);
     const ahead = aiQueue.length + (aiRunning ? 1 : 0);
     if (ahead) await reply(q.id, "status", `Queued behind ${ahead} AI request(s)...`);
-    aiQueue.push({ id: q.id, refreshAbilities: true, run: async (onProgress) => (await answer("panel", text, onProgress)).answer });
+    // Digging edits the game, so with the core locked a dig-sounding question
+    // is answered by the advisor instead (a wrong guess never costs an answer).
+    let tier = tierFor(text);
+    if (tier === "dig" && game.coreLocked) tier = "advisor";
+    aiQueue.push({ id: q.id, key: `ask:${tier}`, refreshAbilities: tier === "dig", run: async (onProgress) => (await answer("panel", text, onProgress, { tier, freeText: true })).answer });
     runAiQueue();
     return;
   }
@@ -183,6 +225,10 @@ async function handlePanel(q) {
     }
     doneForTurn.set(key, { turn: q.turn, at: Date.now() });
   }
+  if (AI_PROMPTS[key] && DIG_KEYS.has(key) && game.coreLocked) {
+    await reply(q.id, "error", `${game.coreLocked} Digging proves functions by editing the game, so it is off in this game.`);
+    return;
+  }
   if (AI_PROMPTS[key]) {
     // The same AI button pressed again while the first is still waiting:
     // one answer is enough (and costs once).
@@ -197,7 +243,8 @@ async function handlePanel(q) {
       key,
       refreshAbilities: ["explore_ai", "dig_ai", "dig3_ai"].includes(key),
       run: async (onProgress) => {
-        const res = await handlePanelRequest(makeCtx(onProgress), q, { ask: (question) => answer("panel", question, onProgress) });
+        const tier = DIG_KEYS.has(key) ? "dig" : "advisor";
+        const res = await handlePanelRequest(makeCtx(onProgress), q, { ask: (question) => answer("panel", question, onProgress, { tier }) });
         return res.text;
       },
     });
@@ -228,6 +275,18 @@ async function recover(list) {
       await reply(q.id, "error", `The bridge restarted before [${q.text || q.key}] finished. Check the game, then press it again if it was not done.`);
     }
   }
+}
+
+// Lock the game core in multiplayer with other people. A poll that could not
+// read the facts (no fields, or no human count) keeps the previous lock.
+function applyMultiplayer(res) {
+  const locked = multiplayerLock(res, game.coreLocked);
+  if (locked !== game.coreLocked) {
+    if (locked) log(`multiplayer game with ${res.humans ?? "?"} people${res.cloud ? " (Play By Cloud)" : ""}: edits locked`);
+    else if (game.coreLocked !== UNKNOWN_LOCK) log("not a multiplayer game with other people: edits allowed");
+  }
+  game.coreLocked = locked;
+  if (res.mp !== undefined) state.multiplayer = res.mp || res.cloud ? { humans: res.humans, cloud: !!res.cloud } : null;
 }
 
 let recovered = false;
@@ -266,13 +325,31 @@ async function pollPanel() {
   if (!game.connected) return;
   let res;
   try {
-    ({ value: res } = await game.lua(UI_STATE, POLL_LUA, { timeoutMs: 5000, params: { recover: !recovered } }));
+    ({ value: res } = await game.lua(UI_STATE, POLL_LUA, { timeoutMs: 5000, params: { recover: !recovered }, force: true }));
   } catch (err) {
     state.panel = false;
-    if (!/not found/.test(err.message)) log(`poll: ${err.message}`);
+    // Loading, leaving or rejoining: hold every other call until the game is
+    // back (a call into a half-torn-down game can crash it).
+    if (["invalid-state", "wrong-state", "not-found"].includes(err.code) || /not found|Invalid Lua State/i.test(err.message)) {
+      if (!game.paused) log("the game is loading or between sessions - pausing all copilot calls");
+      game.paused = "The game is loading or between sessions; the copilot waits until it is back. Stop here and do not retry.";
+      // The next game may be a different kind (single player, multiplayer).
+      game.coreLocked = UNKNOWN_LOCK;
+      stale = true;
+    } else {
+      log(`poll: ${err.message}`);
+    }
     return;
   }
   if (!res) return;
+  applyMultiplayer(res);
+  if (game.paused) {
+    log("the game is back - copilot calls resume");
+    game.paused = null;
+    stale = true;
+  }
+  // A new turn makes any cached view of the game old.
+  if (res.turn != null && snapCache?.meta?.turn != null && res.turn !== snapCache.meta.turn) stale = true;
   // The mailbox outlives a game (ExposedMembers is app-wide), so the panel is
   // only "loaded" when its own Lua state exists in this game.
   // Injecting happens only right after a fresh state list confirms the panel
@@ -310,7 +387,8 @@ async function pollPanel() {
       log(`could not show the panel context: ${err.message}`);
     }
     // Tell the panel who is answering, and give it the saved abilities.
-    await reply(0, "hello", DEFAULT_MODEL);
+    // Short: it shares the status line with the New button.
+    await reply(0, "hello", `${shortModel(ADVISOR_MODEL)} / ${shortModel(DIG_MODEL)}`);
     // Panel v5+ rebuilds its tabs from this, so new buttons need no reload.
     await sendButtons("tabs", TABS);
     await sendButtons("abilities", abilityButtons(memory));
@@ -379,14 +457,14 @@ function body(req) {
 }
 
 const routes = {
-  "GET /status": async () => ({ ...state, model: DEFAULT_MODEL, states: game.tuner.states.map((s) => s.name), abilities: memory.listAbilities().length }),
+  "GET /status": async () => ({ ...state, model: DEFAULT_MODEL, advisorModel: ADVISOR_MODEL, digModel: DIG_MODEL, paused: game.paused, coreLocked: !!game.coreLocked, aiBlocked: aiBlock && Date.now() < aiBlock.until ? aiBlock.message : null, states: game.tuner.states.map((s) => s.name), abilities: memory.listAbilities().length }),
   "GET /snapshot": async () => makeCtx().snapshot().then((s) => (stale = true, s)),
   "GET /summary": async () => empireSummary(await makeCtx().snapshot()),
   "GET /states": async () => game.states(),
   "GET /tools": async () => allTools(memory).map((t) => ({ name: t.name, description: t.description })),
   "GET /journal": async () => memory.recentJournal(50),
   "GET /inflight": async () => suspects(undefined, { limit: 20 }),
-  "POST /ask": async (b) => answer(b.source || "http", b.question),
+  "POST /ask": async (b) => answer(b.source || "http", b.question, undefined, { tier: b.tier || tierFor(b.question), freeText: true }),
   "POST /lua": async (b) => {
     stale = true;
     return game.lua(b.state || UI_STATE, b.code, { params: b.params || {}, timeoutMs: b.timeoutMs || 20000 });
@@ -417,7 +495,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  log(`AI Civ Copilot bridge on http://127.0.0.1:${PORT}  model=${DEFAULT_MODEL}`);
+  log(`AI Civ Copilot bridge on http://127.0.0.1:${PORT}  advisor=${ADVISOR_MODEL}  dig=${DIG_MODEL}`);
   log(`waiting for Civ VI tuner on ${game.tuner.host}:${game.tuner.port} (AppOptions.txt: EnableTuner 1)`);
   connectLoop();
 });

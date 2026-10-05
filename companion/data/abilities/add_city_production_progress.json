@@ -1,0 +1,37 @@
+{
+  "name": "add_city_production_progress",
+  "description": "Add (or subtract, negative) production progress to a city's CURRENT build item via City:GetBuildQueue():AddProgress(n) in GameCore_Tuner (Firaxis Debug/City.ltp '+20 Production'). Partial alternative to finish_production: e.g. shave turns off a wonder or settler without completing it instantly. Verified live turn 60: +20 on Gniezno's Archer took it from 15 to 7 turns, -20 restored 15 (twice). Params: cityId (required), amount (required, production points; negative removes), playerId (city owner, default local human). Returns the item being built; GameCore has no progress getter, so read the new turn count with get_city (InGame Lua reads of GetUnitProgress/GetTurnsLeft can lag).",
+  "state": "GameCore_Tuner",
+  "kind": "edit",
+  "properties": {
+    "cityId": {
+      "type": "integer",
+      "description": "city id"
+    },
+    "amount": {
+      "type": "number",
+      "description": "production points to add (negative removes)"
+    },
+    "playerId": {
+      "type": "integer",
+      "description": "city owner id (default local human player)"
+    }
+  },
+  "required": [
+    "cityId",
+    "amount"
+  ],
+  "lua": "local pid = P.playerId\nif pid == nil then\n  for _, id in ipairs(PlayerManager.GetAliveIDs()) do if Players[id]:IsHuman() then pid = id break end end\nend\nlocal alive = false\nfor _, id in ipairs(PlayerManager.GetAliveIDs()) do if id == pid then alive = true end end\nif not alive then emitJson({ok=false, error=\"player not alive: \"..tostring(pid)}) return end\nlocal c = Players[pid]:GetCities():FindID(P.cityId)\nif c == nil then emitJson({ok=false, error=\"no city \"..tostring(P.cityId)..\" for player \"..tostring(pid)}) return end\nlocal q = c:GetBuildQueue()\nlocal item = q:CurrentlyBuilding()\nif item == nil or item == \"\" or item == \"NONE\" then emitJson({ok=false, error=\"city is not building anything\", city=c:GetName()}) return end\nq:AddProgress(P.amount)\nemitJson({ok=true, city=c:GetName(), cityId=P.cityId, playerId=pid, item=item, applied=P.amount, note=\"read new turns with get_city\"})",
+  "tested": {
+    "at": "2026-10-05T00:33:59.621Z",
+    "params": {
+      "cityId": 131073,
+      "amount": 0
+    },
+    "result": "{\"value\":{\"applied\":0,\"city\":\"LOC_CITY_NAME_GNIEZNO\",\"cityId\":131073,\"note\":\"read new turns with get_city\",\"ok\":true,\"item\":\"UNIT_ARCHER\",\"playerId\":0},\"text\":[]}"
+  },
+  "createdAt": "2026-10-05T00:33:59.622Z",
+  "updatedAt": "2026-10-05T00:33:59.622Z",
+  "uses": 0,
+  "history": []
+}

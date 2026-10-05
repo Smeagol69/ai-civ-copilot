@@ -25,6 +25,12 @@ export const DEFAULT_LOCK_PORT = Number(process.env.AICIV_LOCK_PORT || 47318);
 const PORT_SCAN = Number(process.env.CIV6_TUNER_PORT_SCAN || 6);
 // Upper bound on any single call, whatever the caller asks for.
 export const MAX_TIMEOUT_MS = 120000;
+// State indices change when the game loads, leaves or rejoins a session. A
+// cached list older than this is re-read before a call, and any "Invalid Lua
+// State" reply forces a re-read: on 2026-10-04 a stale index sent the AI's
+// GameCore_Tuner code into the front-end "My2K" state during a multiplayer
+// rejoin.
+export const STATE_TTL_MS = 3000;
 // After a call times out, how long to keep waiting (holding the lock) for the
 // game to finish it before the connection is dropped as unsettled.
 const LATE_GRACE_MS = Number(process.env.AICIV_LATE_GRACE_MS || 30000);
@@ -215,6 +221,7 @@ export class TunerClient extends EventEmitter {
     this.inbox = [];
     this.app = null;
     this.states = [];
+    this.statesAt = 0;
     this.queue = Promise.resolve();
     this.connecting = null;
     this.nonce = 0;
@@ -402,7 +409,10 @@ export class TunerClient extends EventEmitter {
     this.#send(TAG_HANDSHAKE, "LSQ:");
     const r = await this.#reply(5000);
     // No reply keeps what we knew; a real reply replaces it.
-    if (r) this.states = parseStateList(r.payload);
+    if (r) {
+      this.states = parseStateList(r.payload);
+      this.statesAt = Date.now();
+    }
     return this.states;
   }
 
@@ -444,6 +454,15 @@ export class TunerClient extends EventEmitter {
     // Anything still buffered is print noise from earlier; it is not ours.
     this.inbox = [];
     if (!this.connected) throw new LuaError("tuner not connected", { state: stateName, code: "lost" });
+    // Re-read the state list when it may be out of date (see STATE_TTL_MS).
+    // If the game does not answer, do not fall back on the old list: nothing
+    // has been sent yet, so refusing here is safe.
+    if (Date.now() - this.statesAt > STATE_TTL_MS) {
+      await this.#lsq();
+      if (Date.now() - this.statesAt > STATE_TTL_MS) {
+        throw new LuaError(`Lua state "${stateName}" is not available right now (the game did not answer the state query; it may be loading)`, { state: stateName, code: "invalid-state" });
+      }
+    }
     let idx = this.stateIndex(stateName);
     if (idx === null) {
       await this.#lsq();
@@ -501,12 +520,29 @@ export class TunerClient extends EventEmitter {
       // Compile errors are not nonce-tagged. We hold the lock and wait for
       // every call to settle before releasing it, so one arriving now is ours.
       if (frame.payload.startsWith("ERR:")) {
+        const msg = frame.payload.slice(4).trim();
+        if (/invalid lua state/i.test(msg)) {
+          // The game dropped or renumbered its states (loading, leaving).
+          this.statesAt = 0;
+          finish("error", { error: "invalid-state" });
+          throw new LuaError(`Lua state "${stateName}" is not available right now (the game is loading or between sessions)`, { state: stateName, code: "invalid-state" });
+        }
         finish("error", { error: "compile" });
-        throw new LuaError(frame.payload.slice(4).trim(), { state: stateName, code: "compile" });
+        throw new LuaError(msg, { state: stateName, code: "compile" });
       }
       const out = parseOutput(frame.payload);
       if (!out) continue;
       const text = out.text;
+      // Our nonce printed by a different state means the index was stale and
+      // the code ran somewhere else. Stop at once - before the error and end
+      // handling, which would otherwise report it as an ordinary result or
+      // runtime error. Later lines of that call carry its nonce and are
+      // ignored by the next call.
+      if (out.state && out.state !== stateName && text.includes(`@@${n}`)) {
+        this.statesAt = 0;
+        finish("error", { error: "wrong-state", ranIn: out.state });
+        throw new LuaError(`the game ran this in "${out.state}" instead of "${stateName}" - its Lua states changed (loading or between sessions); results discarded`, { state: stateName, code: "wrong-state", outcome: "unknown" });
+      }
       if (text === end || text.endsWith(end)) break;
       const ei = text.indexOf(errTag);
       if (ei >= 0) {

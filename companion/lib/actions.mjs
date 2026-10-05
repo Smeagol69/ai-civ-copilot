@@ -6,7 +6,7 @@
 // has the final word (CanStart* for play, the API's own result for edits).
 // Nothing is reported as done until the game's own state says so.
 
-import { UI_STATE, CORE_STATE, loadLua, buildScript, decodeLines } from "./game.mjs";
+import { UI_STATE, CORE_STATE, loadLua, decodeLines } from "./game.mjs";
 
 const int = { type: "integer" };
 const str = { type: "string" };
@@ -195,14 +195,14 @@ export function validateAction(name, args = {}) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function runActionLua(game, state, P) {
-  await game.ensureConnected();
-  const lines = await game.tuner.exec(state, buildScript(loadLua("actions"), P), { timeoutMs: 20000, label: `action:${P.action}` });
+  // Through Game.exec, so the pause and multiplayer locks apply to actions too.
+  const lines = await game.exec(state, loadLua("actions"), { params: P, timeoutMs: 20000, label: `action:${P.action}` });
   return decodeLines(lines).value || { ok: false, reason: "the game returned no data" };
 }
 
 // A lost connection or a call with an unknown outcome means the game may be
 // gone or still busy: never pile more calls on it.
-const isTransportError = (err) => !!err && (err.code === "lost" || err.code === "timeout" || /not connected|no Civ VI tuner/.test(err.message));
+const isTransportError = (err) => !!err && (err.code === "lost" || err.code === "timeout" || err.code === "wrong-state" || /not connected|no Civ VI tuner/.test(err.message));
 
 // Execute one action and return the game's own account of what happened.
 // Requests are asynchronous; read back a few times before calling it failed.

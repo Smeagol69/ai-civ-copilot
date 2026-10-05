@@ -574,8 +574,10 @@
    "state": "GameCore_Tuner",
    "holder": "City:GetBuildQueue",
    "method": "AddProgress",
-   "status": "evidenced",
-   "notes": [],
+   "status": "ability",
+   "notes": [
+    "2026-10-05 AddProgress(n) adds n production to the current build item; negative values subtract. Verified turn 60 on Gniezno Archer: +20 -> 15 to 7 turns, -20 -> back to 15, repeated twice. GameCore BuildQueue has no progress getter (GetTurnsLeft is 'Not Implemented' there); InGame GetUnitProgress/GetTurnsLeft read stale values right after the edit, but get_city shows the new turn count."
+   ],
    "kind": "write",
    "leverage": 68,
    "evidence": {
@@ -594,7 +596,8 @@
       "ctx": "tuner"
      }
     ]
-   }
+   },
+   "ability": "add_city_production_progress"
   },
   "GameCore_Tuner|City:GetBuildQueue|CanProduce": {
    "state": "GameCore_Tuner",
@@ -2234,8 +2237,10 @@
    "state": "GameCore_Tuner",
    "holder": "Unit:GetAbility",
    "method": "ChangeAbilityCount",
-   "status": "evidenced",
-   "notes": [],
+   "status": "ability",
+   "notes": [
+    "2026-10-05 Unit:GetAbility():ChangeAbilityCount(\"ABILITY_X\", delta) in GameCore_Tuner. Verified live turn 60 on Archer 720899: +1 ABILITY_GREAT_GENERAL_STRENGTH -> GetAbilityCount 1, HasAbility true, combat_preview attacker strength 30 -> 35; -1 reverted to 0/false/30. Unit:GetCombat() does not show ability modifiers (stayed 15). Sibling methods: AddAbilityCount, RemoveAbilityCount, CanHaveAbility, GetAbilities ({Ability=index, Count})."
+   ],
    "kind": "write",
    "leverage": 73,
    "evidence": {
@@ -2269,7 +2274,8 @@
       "ctx": "gameplay"
      }
     ]
-   }
+   },
+   "ability": "change_unit_ability"
   },
   "GameCore_Tuner|Unit:GetAbility|GetAbilities": {
    "state": "GameCore_Tuner",
@@ -70820,6 +70826,66 @@
     "action": 33
    },
    "runs": 7
+  },
+  {
+   "at": "2026-10-05T00:21:43.742Z",
+   "stage": "map",
+   "ms": 718,
+   "added": 0,
+   "total": 2458,
+   "byStatus": {
+    "evidenced": 1136,
+    "unknown": 652,
+    "probed": 667,
+    "ability": 3
+   },
+   "byKind": {
+    "write": 298,
+    "read": 1965,
+    "other": 162,
+    "action": 33
+   },
+   "runs": 8
+  },
+  {
+   "at": "2026-10-05T00:29:50.725Z",
+   "stage": "map",
+   "ms": 266,
+   "added": 0,
+   "total": 2458,
+   "byStatus": {
+    "evidenced": 1136,
+    "unknown": 652,
+    "probed": 667,
+    "ability": 3
+   },
+   "byKind": {
+    "write": 298,
+    "read": 1965,
+    "other": 162,
+    "action": 33
+   },
+   "runs": 9
+  },
+  {
+   "at": "2026-10-05T00:32:09.838Z",
+   "stage": "map",
+   "ms": 261,
+   "added": 0,
+   "total": 2458,
+   "byStatus": {
+    "evidenced": 1136,
+    "unknown": 652,
+    "probed": 667,
+    "ability": 3
+   },
+   "byKind": {
+    "write": 298,
+    "read": 1965,
+    "other": 162,
+    "action": 33
+   },
+   "runs": 10
   }
  ]
 }

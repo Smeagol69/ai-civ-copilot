@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { TunerClient } from "./tuner.mjs";
+import { TunerClient, LuaError } from "./tuner.mjs";
 import { inflightTracer } from "./inflight.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -19,6 +19,13 @@ export const LUA_DIR = path.join(HERE, "..", "lua");
 
 export const UI_STATE = "InGame";
 export const CORE_STATE = "GameCore_Tuner";
+// The in-game panel's own Lua state (the mod's UI context).
+export const PANEL_STATE = "AICivCopilotPanel";
+// While the core is locked only these UI states may run code: they read the
+// game and send the player's own requests, which the game networks normally.
+// Every other state - GameCore_Tuner, gameplay scripts like WorldCongress,
+// other mods' script states - can edit the simulation directly.
+export const CORE_LOCK_ALLOWED = new Set([UI_STATE, PANEL_STATE]);
 
 const luaCache = new Map();
 export function loadLua(name) {
@@ -93,6 +100,27 @@ export class Game {
     return this.tuner.connected;
   }
 
+  // Two locks the bridge sets from what it sees each poll:
+  //   paused     - the game is loading, leaving or between sessions: no calls
+  //                at all (a call into a half-torn-down game can crash it).
+  //   coreLocked - a multiplayer game with other people (network or Play By
+  //                Cloud): only the UI states in CORE_LOCK_ALLOWED may run
+  //                code; anything that can edit the simulation is refused.
+  // Internal callers that must run anyway (the poll) pass force: true.
+  #guard(state, force) {
+    if (force) return;
+    if (this.paused) throw new LuaError(this.paused, { state, code: "paused" });
+    if (this.coreLocked && !CORE_LOCK_ALLOWED.has(state)) throw new LuaError(this.coreLocked, { state, code: "core-locked" });
+  }
+
+  // The one way into the game: Game.lua, Game.script and typed actions all
+  // come through here, so the locks above cover every call.
+  async exec(state, body, { params = {}, timeoutMs, label, force } = {}) {
+    this.#guard(state, force);
+    await this.ensureConnected();
+    return this.tuner.exec(state, buildScript(body, params), { timeoutMs, label });
+  }
+
   async ensureConnected() {
     if (!this.tuner.connected) await this.tuner.connect();
   }
@@ -103,17 +131,15 @@ export class Game {
   }
 
   // Run a named script from lua/ with params; returns decoded JSON.
-  async script(name, params = {}, { state = UI_STATE, timeoutMs } = {}) {
-    await this.ensureConnected();
-    const lines = await this.tuner.exec(state, buildScript(loadLua(name), params), { timeoutMs, label: `script:${name}` });
+  async script(name, params = {}, { state = UI_STATE, timeoutMs, force } = {}) {
+    const lines = await this.exec(state, loadLua(name), { params, timeoutMs, label: `script:${name}`, force });
     return decodeLines(lines).value;
   }
 
   // Run arbitrary Lua. The prelude is available (emit, emitJson, try, L,
   // J.encode), so callers can return structured data with emitJson(...).
-  async lua(state, code, { params = {}, timeoutMs } = {}) {
-    await this.ensureConnected();
-    const lines = await this.tuner.exec(state, buildScript(code, params), { timeoutMs, label: "lua" });
+  async lua(state, code, { params = {}, timeoutMs, force } = {}) {
+    const lines = await this.exec(state, code, { params, timeoutMs, label: "lua", force });
     return decodeLines(lines);
   }
 
