@@ -445,12 +445,12 @@ export class TunerClient extends EventEmitter {
   //     print() noise from the game or other mods never leaks into results;
   //   - a runtime error is caught and reported in-band;
   //   - a sentinel marks the end so we never wait for a timeout on success.
-  async exec(stateName, body, { timeoutMs = 15000, label } = {}) {
+  async exec(stateName, body, { timeoutMs = 15000, label, beforeSend } = {}) {
     const limit = Math.max(1, Math.min(Number(timeoutMs) || 15000, MAX_TIMEOUT_MS));
-    return this.#serial(() => this.#locked(() => this.#exec(stateName, body, limit, label)));
+    return this.#serial(() => this.#locked(() => this.#exec(stateName, body, limit, label, beforeSend)));
   }
 
-  async #exec(stateName, body, timeoutMs, label) {
+  async #exec(stateName, body, timeoutMs, label, beforeSend) {
     // Anything still buffered is print noise from earlier; it is not ours.
     this.inbox = [];
     if (!this.connected) throw new LuaError("tuner not connected", { state: stateName, code: "lost" });
@@ -472,6 +472,10 @@ export class TunerClient extends EventEmitter {
       const names = this.states.map((s) => s.name).join(", ") || "(none)";
       throw new LuaError(`Lua state "${stateName}" not found. Is a game loaded? States: ${names}`, { state: stateName, code: "not-found" });
     }
+    // A synchronous caller guard runs after queue, mutex and state-query
+    // waits. No await follows it before CMD is sent, so newly applied game
+    // locks cannot be bypassed by a command that was already waiting.
+    beforeSend?.();
     const n = `${Date.now().toString(36)}${(this.nonce++).toString(36)}`;
     const tag = `@@${n}|`;
     const end = `@@${n}$END`;

@@ -118,7 +118,12 @@ export class Game {
   async exec(state, body, { params = {}, timeoutMs, label, force } = {}) {
     this.#guard(state, force);
     await this.ensureConnected();
-    return this.tuner.exec(state, buildScript(body, params), { timeoutMs, label });
+    // Connection, earlier calls and the machine-wide mutex can all delay a
+    // command. A poll may apply a lock during that wait, so check again at
+    // the tuner's actual dispatch point, after all its asynchronous waits.
+    return this.tuner.exec(state, buildScript(body, params), {
+      timeoutMs, label, beforeSend: () => this.#guard(state, force),
+    });
   }
 
   async ensureConnected() {

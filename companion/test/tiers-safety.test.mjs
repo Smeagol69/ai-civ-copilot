@@ -246,3 +246,81 @@ test("multiplayer lock: network or Play By Cloud with other people locks; single
   assert.equal(multiplayerLock({ panel: false }, MP_LOCK), MP_LOCK, "a poll without the facts keeps the lock");
   assert.equal(multiplayerLock(undefined, UNKNOWN_LOCK), UNKNOWN_LOCK);
 });
+
+test("a lock applied while a call is queued prevents its command from reaching the game", async () => {
+  // The first call holds the tuner queue. The later call passes Game.exec's
+  // initial check while it is unlocked, then waits behind that first call.
+  let releaseFirst;
+  const held = new Promise((resolve) => { releaseFirst = resolve; });
+  let firstStarted;
+  const started = new Promise((resolve) => { firstStarted = resolve; });
+  const sent = [];
+  const fake = await startFakeTuner(async (ctx) => {
+    sent.push(ctx.state);
+    if (sent.length === 1) {
+      firstStarted();
+      await held;
+    }
+    ctx.emitJson({ ok: true });
+  });
+  const game = new Game({ port: fake.port, trace: false });
+  try {
+    await game.ensureConnected();
+    const first = game.lua(UI_STATE, "emitJson({ok=true})");
+    await started;
+    const core = game.lua(CORE_STATE, "emitJson({ok=true})");
+    // Give the async entry path time to put the call in the tuner's queue.
+    await new Promise((resolve) => setImmediate(resolve));
+    game.coreLocked = "multiplayer: edits off";
+    const rejected = assert.rejects(core, (e) => e.code === "core-locked");
+    releaseFirst();
+    await first;
+    await rejected;
+    assert.deepEqual(sent, [UI_STATE], "the queued core command was never sent");
+    assert.equal((await game.lua(UI_STATE, "emitJson({ok=true})")).value.ok, true,
+      "the lock still permits normal UI calls and the rejected call releases the queue");
+  } finally {
+    releaseFirst();
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
+test("pausing while a command waits for the machine-wide mutex is checked before dispatch", async () => {
+  let releaseLock;
+  let lockStarted;
+  const waiting = new Promise((resolve) => { lockStarted = resolve; });
+  const held = new Promise((resolve) => { releaseLock = resolve; });
+  let acquisitions = 0;
+  let releases = 0;
+  const lock = {
+    async acquire() {
+      if (++acquisitions > 1) {
+        lockStarted();
+        await held;
+      }
+    },
+    async release() { releases++; },
+  };
+  const fake = await startFakeTuner((ctx) => ctx.emitJson({ ok: true }));
+  const { TunerClient } = await import("../lib/tuner.mjs");
+  const game = new Game({ tuner: new TunerClient({ port: fake.port, lock }), trace: false });
+  try {
+    await game.ensureConnected();
+    const call = game.lua(UI_STATE, "emitJson({ok=true})");
+    await waiting;
+    game.paused = "loading";
+    const rejected = assert.rejects(call, (e) => e.code === "paused");
+    releaseLock();
+    await rejected;
+    assert.equal(fake.received.filter((f) => f.payload.startsWith("CMD:")).length, 0,
+      "nothing was sent after the game became paused");
+    assert.equal(releases, 2, "both the handshake and the rejected call release the mutex");
+    assert.equal((await game.lua(UI_STATE, "emitJson({ok=true})", { force: true })).value.ok, true,
+      "the internal poll can still dispatch while paused");
+  } finally {
+    releaseLock();
+    game.tuner.close();
+    await fake.close();
+  }
+});

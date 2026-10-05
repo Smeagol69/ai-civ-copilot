@@ -377,3 +377,19 @@ leverage, Firaxis call sites, and a status that only moves forward
   fixes) was unit-tested but not yet exercised live; run the play and edit
   tests against it one agent at a time.
 - The in-game panel's layout has not been seen on screen.
+
+## Offline audit checkpoint (2026-10-05)
+
+`Game.exec` now checks its pause/multiplayer guards again at the tuner's
+dispatch point. A command may have passed the first check, then waited for
+connection, an earlier call, the machine-wide mutex or a fresh state list;
+a lock applied during those waits must still prevent its `CMD` from being
+sent. The synchronous `beforeSend` hook runs after those waits, while the
+tuner holds the mutex. Internal polls retain their explicit `force: true`.
+
+The two new fake-tuner regressions both failed on `15c87f2`, then passed with
+this fix: a queued core command is refused after the multiplayer lock turns
+on, and a UI command waiting for the mutex is refused after pause turns on.
+The full companion suite passes 107 tests. This was verified offline only;
+no live game calls, deployment or paid model requests were made. Live session
+transition verification remains open, using one caller at a time.
