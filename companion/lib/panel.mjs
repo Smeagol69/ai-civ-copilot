@@ -95,6 +95,99 @@ export function formatTurnBrief(snap) {
   return lines.join("\n");
 }
 
+// The game's own advisor (advisor.lua), for the selection or the empire.
+export function formatAdvisor(a, { cityId, settleOnly, builderId } = {}) {
+  if (!a || a.error) return `The game's advisor is not readable: ${a?.error || "no data"}`;
+  const lines = [];
+  if (!settleOnly && builderId === undefined) {
+    if (a.techs) lines.push(`Research: ${a.techs.length ? a.techs.map((t) => `${t.name} (${t.score})`).join(", ") : "no recommendation"}.`);
+    if (a.civics) lines.push(`Civics: ${a.civics.length ? a.civics.map((t) => `${t.name} (${t.score})`).join(", ") : "no recommendation"}.`);
+    for (const c of a.cities || []) {
+      if (cityId !== undefined && c.id !== cityId) continue;
+      lines.push(`${c.name} should build: ${c.recommended?.length ? c.recommended.map((r) => `${r.name} (${r.score})`).join(", ") : "no recommendation"}.`);
+    }
+  }
+  if (a.settle && builderId === undefined && cityId === undefined) {
+    if (!a.settle.length) lines.push("No recommended city sites right now.");
+    a.settle.forEach((s, i) => {
+      lines.push(`City site ${i + 1}: (${s.x},${s.y})`);
+      if (s.pros?.length) lines.push(`  + ${s.pros.join("; ")}`);
+      if (s.cons?.length) lines.push(`  - ${s.cons.join("; ")}`);
+    });
+  }
+  for (const b of a.builders || []) {
+    if (builderId !== undefined && b.id !== builderId) continue;
+    if (cityId !== undefined || settleOnly) continue;
+    lines.push(`Builder at (${b.x},${b.y})${b.city ? ` near ${b.city}` : ""}, ${b.charges} charges: ${b.recommended?.length ? b.recommended.map((r) => `${r.name} at (${r.x},${r.y})`).join(", ") : "no recommendation (move it inside a city's borders)"}.`);
+  }
+  if (!lines.length) lines.push("The game has no recommendation for this.");
+  lines.push("(The game's own advisor - engine scores, not the AI.)");
+  return lines.join("\n");
+}
+
+export function formatCombat(c) {
+  if (!c || c.error) return `Attack odds: ${c?.error || "no data"}.`;
+  const a = c.attacker;
+  const head = `${pretty(a.type)} (${a.hp} hp, ${a.moves} moves, ${a.attacks} attack${a.attacks === 1 ? "" : "s"} left), ${c.mode}:`;
+  if (!c.results?.length) return `${head}\nNo visible enemy combat units within range.`;
+  const lines = [head];
+  for (const r of c.results.slice(0, 8)) {
+    const outcome = r.kills ? "KILLS it" : r.dies ? "YOUR UNIT DIES" : `it ends at ${r.defenderHpAfter} hp, you at ${r.attackerHpAfter} hp`;
+    lines.push(`- ${pretty(r.type)} (${r.owner || `player ${r.player}`}) at (${r.x},${r.y}), ${r.distance} away: ${r.attackerStrength} vs ${r.defenderStrength}, deal ${r.damageToDefender} / take ${r.damageToAttacker} - ${outcome}${r.canAttackNow ? " [can attack now]" : ""}`);
+  }
+  lines.push("(The game's own combat preview; actual results vary a little.)");
+  return lines.join("\n");
+}
+
+// Game text carries icon and colour markup ([ICON_Citizen], [COLOR_..]).
+const untag = (t) => String(t ?? "").replace(/\[(ICON|COLOR|ENDCOLOR|NEWLINE)[^\]]*\]/g, (m) => (m.startsWith("[NEWLINE") ? " " : "")).replace(/\s+/g, " ").trim();
+
+export function formatBoosts(p) {
+  const b = p?.boosts;
+  if (!b) return `Eurekas: ${p?.error || "not readable"}.`;
+  const line = (x) => `- ${x.name}${x.available ? " (available now)" : ""}: ${untag(x.how)}`;
+  const lines = ["Next eurekas (research boosts), cheapest first:", ...b.techs.slice(0, 8).map(line)];
+  lines.push("Next inspirations (civic boosts):", ...b.civics.slice(0, 6).map(line));
+  return lines.join("\n");
+}
+
+export function formatGreatPeople(p) {
+  const list = p?.greatPeople;
+  if (!list) return `Great people: ${p?.error || "not readable"}.`;
+  if (!list.length) return "No great people on the timeline yet.";
+  return list.map((g) => {
+    const cls = pretty(String(g.class || "").replace(/^GREAT_PERSON_CLASS_/, ""));
+    const buy = [g.goldCost ? `${g.goldCost} gold` : null, g.faithCost ? `${g.faithCost} faith` : null].filter(Boolean).join(" or ");
+    const mine = g.myPoints != null ? `, you have ${Math.round(g.myPoints)} (+${Math.round((g.myPointsPerTurn || 0) * 10) / 10}/turn)` : "";
+    return `- ${cls}: ${g.person || "?"}, needs ${g.cost} points${mine}${g.claimedBy ? `, taken by ${g.claimedBy}` : ""}${buy ? `; buy for ${buy}` : ""}${g.canRecruit ? " - YOU CAN RECRUIT NOW" : ""}${g.does ? `. ${untag(g.does)}` : ""}`;
+  }).join("\n");
+}
+
+export function formatEnvoys(p) {
+  const e = p?.envoys;
+  if (!e) return `City-states: ${p?.error || "not readable"}.`;
+  const lines = [`Envoys to send: ${e.toGive} (+${Math.round((e.pointsPerTurn || 0) * 10) / 10} influence/turn).`];
+  if (!e.cityStates.length) lines.push("You have not met any city-states yet.");
+  for (const c of e.cityStates) lines.push(`- ${c.name}: your envoys ${c.myEnvoys}, suzerain ${c.iAmSuzerain ? "YOU" : c.suzerain || "nobody"}`);
+  if (p.deals?.length) {
+    lines.push("Deals in force:");
+    for (const d of p.deals) lines.push(`- with ${d.with}: ${d.from} give ${d.what}${d.turnsLeft != null ? `, ${d.turnsLeft} turns left` : ""}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatDistricts(d) {
+  if (!d || d.error) return `District spots: ${d?.error || "no data"}.`;
+  if (!d.districts.length) return `${d.city} cannot place any district right now.`;
+  const lines = [`${d.city} - best district spots (adjacency bonus):`];
+  for (const x of d.districts) {
+    const b = x.best[0];
+    const bonus = b && b.total ? Object.entries(b.bonus).map(([k, v]) => `+${v} ${pretty(k.replace(/^YIELD_/, ""))}`).join(" ") : "no bonus anywhere";
+    lines.push(`- ${x.name}: (${b?.x},${b?.y}) ${bonus}${x.best[1]?.total ? `; next (${x.best[1].x},${x.best[1].y}) +${x.best[1].total}` : ""}`);
+  }
+  return lines.join("\n");
+}
+
 export function formatResources(snap) {
   const res = snap.resources || [];
   if (!res.length) return "No strategic or luxury resources.";
@@ -342,6 +435,15 @@ export const HANDLERS = {
     },
   },
   situation: { run: async (ctx) => ({ text: formatSituation(await ctx.game.situation()) }) },
+  game_advisor: { run: async (ctx) => ({ text: formatAdvisor(await ctx.game.advisor(["tech", "civic", "build", "settle", "builder"])) }) },
+  city_advice: { needs: "city", run: async (ctx, sel) => ({ text: formatAdvisor(await ctx.game.advisor(["build"]), { cityId: sel.cityId }) }) },
+  settle_spots: { run: async (ctx) => ({ text: formatAdvisor(await ctx.game.advisor(["settle"]), { settleOnly: true }) }) },
+  eurekas: { run: async (ctx) => ({ text: formatBoosts(await ctx.game.planning(["boosts"])) }) },
+  great_people: { run: async (ctx) => ({ text: formatGreatPeople(await ctx.game.planning(["greatpeople"])) }) },
+  city_states: { run: async (ctx) => ({ text: formatEnvoys(await ctx.game.planning(["envoys", "deals"])) }) },
+  district_spots: { needs: "city", run: async (ctx, sel) => ({ text: formatDistricts(await ctx.game.districts(sel.cityId)) }) },
+  attack_odds: { needs: "unit", run: async (ctx, sel) => ({ text: formatCombat(await ctx.game.combat(sel.unitId, { radius: 6 })) }) },
+  builder_advice: { needs: "unit", run: async (ctx, sel) => ({ text: formatAdvisor(await ctx.game.advisor(["builder"]), { builderId: sel.unitId }) }) },
   standing: {
     run: async (ctx) => {
       const s = await ctx.game.standing();

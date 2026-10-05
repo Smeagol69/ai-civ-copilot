@@ -131,6 +131,30 @@ export class Game {
     return this.script("situation", {}, { timeoutMs: 20000 });
   }
 
+  // Firaxis' own advisor (Grand Strategic AI): tech, civic, settle, build and
+  // builder recommendations with the engine's scores and reasons.
+  async advisor(what, settleCount) {
+    return this.script("advisor", { what, settleCount }, { timeoutMs: 30000 });
+  }
+
+  // The engine's combat preview for one of the local player's units against
+  // named targets, or every visible foreign combat unit within radius.
+  async combat(attackerId, { targets, radius, ranged } = {}) {
+    return this.script("combat", { attackerId, targets, radius, ranged }, { timeoutMs: 30000 });
+  }
+
+  // Open eurekas/inspirations and how to trigger them, the great-people
+  // timeline with costs and the player's points, envoys and suzerains, and
+  // the deals in force.
+  async planning(what) {
+    return this.script("planning", { what }, { timeoutMs: 30000 });
+  }
+
+  // Where a city can place each district, best adjacency first.
+  async districts(cityId, { districts, top } = {}) {
+    return this.script("districts", { cityId, districts, top }, { timeoutMs: 30000 });
+  }
+
   async tiles(x, y, radius = 2, revealAll = false) {
     return this.script("plots", { x, y, radius, revealAll });
   }

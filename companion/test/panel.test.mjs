@@ -81,7 +81,7 @@ test("every action button sends a typed action that passes validation", async ()
   const game = new Game({ port: fake.port, trace: false });
   const memory = new Memory(fs.mkdtempSync(path.join(os.tmpdir(), "aiciv-")));
   const ctx = { game, memory, snapshot: async () => SNAP, markStale() {}, onProgress() {} };
-  const actionKeys = Object.keys(HANDLERS).filter((k) => !["overview", "production", "threats", "idle", "rivals", "turnbrief", "resources", "researchqueue", "recent", "city_details", "city_tiles", "tile_info", "abilities_list", "standing", "events", "situation", "dig_map", "dig_probe", "dig_frontier", "dig_status"].includes(k));
+  const actionKeys = Object.keys(HANDLERS).filter((k) => !["overview", "production", "threats", "idle", "rivals", "turnbrief", "resources", "researchqueue", "recent", "city_details", "city_tiles", "tile_info", "abilities_list", "standing", "events", "situation", "game_advisor", "city_advice", "settle_spots", "builder_advice", "attack_odds", "eurekas", "great_people", "city_states", "district_spots", "dig_map", "dig_probe", "dig_frontier", "dig_status"].includes(k));
   for (const key of actionKeys) {
     const before = seen.length;
     const r = await handlePanelRequest(ctx, { key, sel: SEL });

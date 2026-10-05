@@ -53,6 +53,10 @@ local TABS = {
 		{ key = "standing",      label = "Victory standing", tip = "Where you and every known civ stand on each road to victory" },
 		{ key = "events",        label = "What happened",   tip = "Events this turn and last: research, cities, wars, deals, notifications" },
 		{ key = "situation",     label = "Diplomacy",       tip = "Wars, deals on the table, and how every civ you have met feels about you and why" },
+		{ key = "game_advisor",  label = "Game's advice",   tip = "Free: what the game's own advisor recommends - research, civics, builds, city sites, builders" },
+		{ key = "eurekas",       label = "Eurekas",         tip = "Free: the next research and civic boosts and exactly how to trigger them" },
+		{ key = "great_people",  label = "Great people",    tip = "Free: who is available, their cost, your points, and what each does" },
+		{ key = "city_states",   label = "City-states",     tip = "Free: envoys to send, suzerains, and the trade deals in force" },
 		{ key = "autobrief",     label = "Turn brief: on",  localToggle = "autoBrief",  onLabel = "Turn brief: on",  offLabel = "Turn brief: off",  tip = "Free: post a Turn brief at the start of each of your turns" },
 		{ key = "autoadvise",    label = "AI advisor: off", localToggle = "autoAdvise", onLabel = "AI advisor: on", offLabel = "AI advisor: off", tip = "AI: tell me what to do at the start of every turn (uses the AI each turn)" },
 		{ key = "alerts",        label = "Alerts: on",      localToggle = "alerts",     onLabel = "Alerts: on",     offLabel = "Alerts: off",     tip = "Pop up and ask the AI for the best response when war is declared or a deal is offered" },
@@ -60,6 +64,8 @@ local TABS = {
 	{ key = "city", label = "City", buttons = {
 		{ key = "city_details",      label = "City details",     needs = "city", tip = "Everything about the selected city" },
 		{ key = "city_ai",           label = "What to build?",   needs = "city", tip = "The AI picks production for the selected city" },
+		{ key = "city_advice",       label = "Game's pick",      needs = "city", tip = "Free: what the game's own advisor recommends this city builds, with scores" },
+		{ key = "district_spots",    label = "District spots",   needs = "city", tip = "Free: the best tile for each district this city can place, by adjacency bonus" },
 		{ key = "finish_production", label = "Finish build",     needs = "city", tip = "Complete the selected city's current production now" },
 		{ key = "pop_up",            label = "+1 Citizen",       needs = "city", tip = "Add a citizen to the selected city" },
 		{ key = "pop_down",          label = "-1 Citizen",       needs = "city", tip = "Remove a citizen from the selected city" },
@@ -69,6 +75,8 @@ local TABS = {
 	{ key = "unit", label = "Unit", buttons = {
 		{ key = "unit_ops",     label = "What can it do?", needs = "unit", tip = "List what the selected unit can do right now, as buttons" },
 		{ key = "unit_ai",      label = "Use it well",     needs = "unit", tip = "The AI suggests (and can carry out) the best use of this unit" },
+		{ key = "builder_advice", label = "Builder advice", needs = "unit", tip = "Free: the game's recommended improvements for the selected builder" },
+		{ key = "attack_odds",  label = "Attack odds",     needs = "unit", tip = "Free: the game's combat preview against every visible enemy within 6 tiles" },
 		{ key = "heal",         label = "Full heal",       needs = "unit", tip = "Restore the selected unit to full health" },
 		{ key = "moves",        label = "Restore moves",   needs = "unit", tip = "Give the selected unit its movement and attacks back" },
 		{ key = "xp",           label = "+50 XP",          needs = "unit", tip = "Give the selected unit 50 experience" },
@@ -95,6 +103,7 @@ local TABS = {
 		{ key = "spawn_scout",   label = "Spawn Scout",   tip = "Create a Scout at the selected unit or city" },
 		{ key = "spawn_warrior", label = "Spawn Warrior", tip = "Create a Warrior at the selected unit or city" },
 		{ key = "tile_info",     label = "Tile info",     tip = "What is on the selected unit's or city's tile" },
+		{ key = "settle_spots",  label = "Settle spots",  tip = "Free: the game's best city sites, with its reasons for and against" },
 		{ key = "reveal_map",    label = "Reveal map",    confirm = true, tip = "Reveal the whole map (click twice; cannot be undone)" },
 	} },
 	{ key = "ai", label = "Ask AI", buttons = {

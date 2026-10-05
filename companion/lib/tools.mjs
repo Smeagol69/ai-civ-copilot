@@ -164,6 +164,26 @@ export const STATIC_TOOLS = [
   },
   { name: "standing_trends", description: "Per-turn change of score, techs, civics, tourism, military and cities for every known civ, from the recorded history (calculated).", input_schema: obj({ turns: I("window, default 20") }) },
   {
+    name: "game_advisor",
+    description: "The game's own advisor (Firaxis' Grand Strategic AI, the engine that drives the recommendation icons): recommended techs and civics with scores, the best city sites with the game's reasons for and against, each city's recommended builds with scores, and recommended improvements for each builder. Engine-calculated; weigh it against the player's road to victory.",
+    input_schema: obj({ what: { type: "array", items: { type: "string", enum: ["tech", "civic", "settle", "build", "builder"] }, description: "which recommendations (default all)" }, settleCount: I("how many city sites (default 5)") }),
+  },
+  {
+    name: "combat_preview",
+    description: "The game's own combat simulation (the attack preview the unit panel shows): for one of the player's units, the predicted strengths, damage both ways, HP after, whether the target dies or the attacker dies, and whether it can attack right now - against given targets or every visible foreign combat unit within radius. Read-only. Use it before recommending or making any attack.",
+    input_schema: obj({ attackerId: I("the attacking unit's id (local player)"), targets: { type: "array", items: { type: "object", properties: { player: { type: "integer" }, id: { type: "integer" } }, required: ["player", "id"] }, description: "specific targets (default: all visible within radius)" }, radius: I("search radius in tiles, default 6"), ranged: B("ranged/bombard attack (default: ranged if the unit has ranged strength)") }, ["attackerId"]),
+  },
+  {
+    name: "planning_info",
+    description: "Planning inputs read live: every eureka and inspiration not yet triggered with how to trigger it (cheapest first, and whether it is researchable now), the great-people timeline (who is available, their cost, what they do, the player's points and points per turn per class, gold/faith patronage cost), envoys to give and every met city-state's suzerain and the player's envoys there, and the deals in force with turns left.",
+    input_schema: obj({ what: { type: "array", items: { type: "string", enum: ["boosts", "greatpeople", "envoys", "deals"] }, description: "which sections (default all)" } }),
+  },
+  {
+    name: "district_spots",
+    description: "Where one of the player's cities can place each district right now, with the game's own adjacency bonus on each spot (best first) and why - the numbers the district placement lens shows.",
+    input_schema: obj({ cityId: I("the city's id"), districts: { type: "array", items: { type: "string" }, description: "DISTRICT_* types (default every district it can place)" }, top: I("spots per district, default 3") }, ["cityId"]),
+  },
+  {
     name: "current_situation",
     description: "What the player faces right now, read live: wars, every known civ's attitude to the player (DIPLO_STATE_*, 0-100 level) with the game's own reasons and scores, their military strength, any deal on the table (what they give, what they ask), and what blocks ending the turn. Start here for 'what should I do' and for any war or deal.",
     input_schema: obj(),
@@ -355,6 +375,14 @@ export async function dispatchTool(ctx, name, input = {}) {
       return memory.history.trends(input.turns ?? 20);
     case "current_situation":
       return game.situation();
+    case "game_advisor":
+      return game.advisor(input.what, input.settleCount);
+    case "planning_info":
+      return game.planning(input.what);
+    case "district_spots":
+      return game.districts(input.cityId, { districts: input.districts, top: input.top });
+    case "combat_preview":
+      return game.combat(input.attackerId, { targets: input.targets, radius: input.radius, ranged: input.ranged });
     case "recent_events": {
       const events = memory.events.recent({ turns: input.turns ?? 3, limit: 120, kinds: input.kinds });
       return { count: events.length, events: events.map(({ at, ...e }) => e) };
