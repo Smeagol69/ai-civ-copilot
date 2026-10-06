@@ -235,6 +235,69 @@ test("two concurrent first core calls share one facts read and both refuse once 
   }
 });
 
+test("a caller arriving after a disconnect does not join the stale pre-disconnect establishment", async () => {
+  // coreLockEstablishing (round 11) is a bare field with no epoch of its
+  // own. The close handler bumps connectionEpoch and resets coreLocked/
+  // coreLockEstablished but never touches coreLockEstablishing, so a
+  // caller arriving after the disconnect would otherwise await the SAME
+  // stale promise instead of starting its own read for the new session -
+  // safe (the stale promise discards itself on the epoch mismatch), but it
+  // leaves the new caller refused with UNKNOWN_LOCK and no fresh read ever
+  // happens until a third, separate call tries again.
+  let phase = "sp1";
+  let factsCmds = 0;
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      factsCmds++;
+      return phase === "sp1"
+        ? ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true })
+        : ctx.emitJson({ mp: false, cloud: false, humans: 1, factsOk: true });
+    }
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  let releaseStarted;
+  const releaseWaiting = new Promise((resolve) => { releaseStarted = resolve; });
+  let releaseGate;
+  const gated = new Promise((resolve) => { releaseGate = resolve; });
+  let releases = 0;
+  const lock = {
+    async acquire() {},
+    async release() {
+      releases++;
+      // The 1st release is the connect handshake's; the 2nd is the old
+      // (pre-disconnect) facts read's own - hold it so it is still pending
+      // when the new caller arrives.
+      if (releases === 2) {
+        releaseStarted();
+        await gated;
+      }
+    },
+  };
+  const { TunerClient } = await import("../lib/tuner.mjs");
+  const game = new Game({ tuner: new TunerClient({ port: fake.port, lock }), trace: false, establishCoreLock: true });
+  try {
+    const first = game.lua(CORE_STATE, "emitJson(1)");
+    await releaseWaiting;
+    const closed = new Promise((resolve) => game.tuner.once("close", resolve));
+    fake.dropAll();
+    await closed;
+    phase = "sp2";
+    // A new caller arrives after the disconnect, while the old attempt's
+    // reply is still held pending - it must do its own fresh read, not
+    // join the stale one.
+    const second = game.lua(CORE_STATE, "emitJson(2)");
+    releaseGate();
+    const [, r2] = await Promise.allSettled([first, second]);
+    assert.equal(r2.status, "fulfilled", r2.reason?.message);
+    assert.equal(r2.value.value.ran, "GameCore_Tuner", "the new caller re-read the new session's facts and succeeded");
+    assert.equal(factsCmds, 2, "the new caller did its own fresh read instead of joining the stale one");
+    assert.equal(game.coreLocked, null);
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
 test("a direct client in an ordinary single-player game is not stuck refusing core edits forever", async () => {
   const fake = await startFakeTuner((ctx) => {
     if (/GetHumanPlayerCount/.test(ctx.lua)) return ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true });

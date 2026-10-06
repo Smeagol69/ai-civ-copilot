@@ -174,11 +174,21 @@ export class Game {
   // setting coreLockEstablished eagerly, just to stop a duplicate read,
   // would make that caller treat the still-unresolved coreLocked as final
   // and refuse (or allow) a call before the real facts ever arrived.
+  //
+  // The pending read is bound to the epoch it started in
+  // (coreLockEstablishingEpoch). A disconnect bumps connectionEpoch without
+  // touching coreLockEstablishing, so without this check a caller arriving
+  // after that disconnect would join the stale pre-disconnect read instead
+  // of starting its own - safe (that read discards itself on the epoch
+  // mismatch), but it leaves the new caller refused with no fresh read
+  // ever happening. The stale read's own finally only clears the shared
+  // slot if it is still the one stored there, so it can never clobber a
+  // newer attempt that already replaced it.
   async #ensureCoreLockEstablished() {
     if (this.coreLockEstablished) return;
-    if (this.coreLockEstablishing) return this.coreLockEstablishing;
+    if (this.coreLockEstablishing && this.coreLockEstablishingEpoch === this.connectionEpoch) return this.coreLockEstablishing;
     const epoch = this.connectionEpoch;
-    this.coreLockEstablishing = (async () => {
+    const attempt = (async () => {
       try {
         // No force:true here on purpose: UI_STATE already passes #guard's
         // coreLocked check with force:false (it's in CORE_LOCK_ALLOWED), so
@@ -207,10 +217,14 @@ export class Game {
         // Could not read the facts yet (not connected, game not loaded) -
         // leave coreLockEstablished false and retry on the next call.
       } finally {
-        this.coreLockEstablishing = null;
+        // Only clear the shared slot if it is still this attempt's own -
+        // a newer attempt (for a later epoch) may have already replaced it.
+        if (this.coreLockEstablishing === attempt) this.coreLockEstablishing = null;
       }
     })();
-    return this.coreLockEstablishing;
+    this.coreLockEstablishing = attempt;
+    this.coreLockEstablishingEpoch = epoch;
+    return attempt;
   }
 
   // The one way into the game: Game.lua, Game.script and typed actions all
