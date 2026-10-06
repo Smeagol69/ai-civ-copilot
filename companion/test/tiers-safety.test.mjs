@@ -168,6 +168,73 @@ test("a direct client (establishCoreLock) starts fail-closed and stays locked un
   }
 });
 
+test("two concurrent first core calls share one facts read and both succeed once it resolves (single player)", async () => {
+  // coreLockEstablished was set true synchronously purely to stop a second
+  // concurrent caller from starting its own redundant read - but that also
+  // made the second caller treat the still-unknown coreLocked as final and
+  // refuse before the real facts ever arrived.
+  let factsCmds = 0;
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      factsCmds++;
+      return ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true });
+    }
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    const [a, b] = await Promise.allSettled([
+      game.lua(CORE_STATE, "emitJson(1)"),
+      game.lua(CORE_STATE, "emitJson(2)"),
+    ]);
+    assert.equal(a.status, "fulfilled", a.reason?.message);
+    assert.equal(b.status, "fulfilled", b.reason?.message);
+    assert.equal(a.value.value.ran, "GameCore_Tuner");
+    assert.equal(b.value.value.ran, "GameCore_Tuner");
+    assert.equal(factsCmds, 1, "both callers shared the one facts read");
+    assert.equal(game.coreLocked, null);
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
+test("two concurrent first core calls share one facts read and both refuse once it resolves (multiplayer)", async () => {
+  let factsCmds = 0;
+  let coreCmds = 0;
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      factsCmds++;
+      return ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true });
+    }
+    coreCmds++;
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    const [a, b] = await Promise.allSettled([
+      game.lua(CORE_STATE, "emitJson(1)"),
+      game.lua(CORE_STATE, "emitJson(2)"),
+    ]);
+    assert.equal(a.status, "rejected");
+    assert.equal(a.reason.code, "core-locked");
+    // Checking the exact lock text, not just the error code, matters here:
+    // a caller that wrongly bypassed the shared read would still be
+    // refused, but with UNKNOWN_LOCK's wording (the still-unresolved
+    // placeholder), not MP_LOCK's (the real, now-known reason).
+    assert.equal(a.reason.message, MP_LOCK);
+    assert.equal(b.status, "rejected");
+    assert.equal(b.reason.code, "core-locked");
+    assert.equal(b.reason.message, MP_LOCK);
+    assert.equal(factsCmds, 1, "both callers shared the one facts read");
+    assert.equal(coreCmds, 0, "neither core write ever reached the game");
+    assert.equal(game.coreLocked, MP_LOCK);
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
 test("a direct client in an ordinary single-player game is not stuck refusing core edits forever", async () => {
   const fake = await startFakeTuner((ctx) => {
     if (/GetHumanPlayerCount/.test(ctx.lua)) return ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true });

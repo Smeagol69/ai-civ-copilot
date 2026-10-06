@@ -168,40 +168,49 @@ export class Game {
   // real facts once, lazily, the first time a non-forced call actually
   // needs them - a UI/panel call never needs this, since CORE_LOCK_ALLOWED
   // already lets it through regardless of coreLocked.
+  // coreLockEstablished only ever becomes true inside a read's own success
+  // branch below - never eagerly. A second concurrent caller must await the
+  // *same* in-flight read (coreLockEstablishing) rather than bypass it:
+  // setting coreLockEstablished eagerly, just to stop a duplicate read,
+  // would make that caller treat the still-unresolved coreLocked as final
+  // and refuse (or allow) a call before the real facts ever arrived.
   async #ensureCoreLockEstablished() {
     if (this.coreLockEstablished) return;
-    this.coreLockEstablished = true;
+    if (this.coreLockEstablishing) return this.coreLockEstablishing;
     const epoch = this.connectionEpoch;
-    try {
-      // No force:true here on purpose: UI_STATE already passes #guard's
-      // coreLocked check with force:false (it's in CORE_LOCK_ALLOWED), so
-      // force was never needed for that - its only real effect was also
-      // bypassing paused, including at the tuner's beforeSend recheck for a
-      // pause that lands while this call is queued or mutex-blocked. This
-      // read must obey pause exactly like every other non-forced call.
-      const { value } = await this.lua(UI_STATE, MP_FACTS_LUA, { timeoutMs: 5000 });
-      if (epoch !== this.connectionEpoch) {
-        // The connection was lost - and coreLocked/coreLockEstablished
-        // already reset - while this read was still in flight. Its reply
-        // belongs to a connection that no longer exists; leave the fresh
-        // invalidation exactly as the close handler set it.
-        return;
-      }
-      if (value?.factsOk) {
-        this.coreLocked = multiplayerLock(value, this.coreLocked);
-      } else {
-        // The call round-tripped, but the GameConfiguration getters
+    this.coreLockEstablishing = (async () => {
+      try {
+        // No force:true here on purpose: UI_STATE already passes #guard's
+        // coreLocked check with force:false (it's in CORE_LOCK_ALLOWED), so
+        // force was never needed for that - its only real effect was also
+        // bypassing paused, including at the tuner's beforeSend recheck for
+        // a pause that lands while this call is queued or mutex-blocked.
+        // This read must obey pause exactly like every other non-forced
+        // call.
+        const { value } = await this.lua(UI_STATE, MP_FACTS_LUA, { timeoutMs: 5000 });
+        if (epoch !== this.connectionEpoch) {
+          // The connection was lost - and coreLocked/coreLockEstablished
+          // already reset - while this read was still in flight. Its reply
+          // belongs to a connection that no longer exists; leave the fresh
+          // invalidation exactly as the close handler set it.
+          return;
+        }
+        if (value?.factsOk) {
+          this.coreLocked = multiplayerLock(value, this.coreLocked);
+          this.coreLockEstablished = true;
+        }
+        // else: the call round-tripped, but the GameConfiguration getters
         // themselves failed (not available yet) - that is not a confirmed
-        // fact, so treat it exactly like a failed read: stay at whatever
-        // the lock already was and retry on the next call, rather than
-        // trusting mp/cloud's false-by-default placeholder values.
-        this.coreLockEstablished = false;
+        // fact, so leave coreLockEstablished false and retry on the next
+        // call, rather than trusting mp/cloud's false-by-default values.
+      } catch {
+        // Could not read the facts yet (not connected, game not loaded) -
+        // leave coreLockEstablished false and retry on the next call.
+      } finally {
+        this.coreLockEstablishing = null;
       }
-    } catch {
-      // Could not read the facts yet (not connected, game not loaded) -
-      // stay locked and retry on the next call.
-      this.coreLockEstablished = false;
-    }
+    })();
+    return this.coreLockEstablishing;
   }
 
   // The one way into the game: Game.lua, Game.script and typed actions all
