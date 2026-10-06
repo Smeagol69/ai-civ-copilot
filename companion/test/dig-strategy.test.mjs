@@ -191,6 +191,43 @@ test("a short string continued across lines with a backslash does not leak its c
   assert.equal(e, undefined, "line 2 is still inside the string opened on line 1; nothing there is real code");
 });
 
+test("a resumed short string is not ended early by an escaped quote", () => {
+  // The resumed-string scan used a plain indexOf for the closing quote,
+  // with no concept of escaping. \" inside the string is a literal quote
+  // character, not the terminator - the real close is the final " at the
+  // end of line 3. Only line 1's call is real; the rest is string content.
+  const files = filesWith(["local y = plot:GetYield(0)", 'local s = "\\', '\\" plot:GetYield()"']);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e, "the real call on line 1 is still recorded as evidence");
+  assert.equal(e.count, 1, "only the real call on line 1 is evidence; the escaped quote does not end the string early");
+  assert.equal(e.zeroArg, false, "the real call takes an argument; inert text after the escaped quote must not override that");
+});
+
+test("the same escaped-quote-on-resume case reproduces with single quotes too", () => {
+  const files = filesWith(["local y = plot:GetYield(0)", "local s = '\\", "\\' plot:GetYield()'"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e);
+  assert.equal(e.count, 1);
+  assert.equal(e.zeroArg, false);
+});
+
+test("a resumed short string still closes correctly, and real code after the close on that line is scanned", () => {
+  // Guards the fix itself: an escape-aware resume must still find a real,
+  // unescaped closing quote and keep scanning what follows as real code.
+  const files = filesWith(['local s = "abc\\', 'def" local y = plot:GetYield()']);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e, "the real call after the string closes is recorded");
+  assert.ok(e.zeroArg, "it is a genuine zero-argument call");
+});
+
+test("an escaped quote on a resumed string does not make the probe-safety gate wrongly treat the function as zero-argument", () => {
+  const memory = fakeMemory();
+  const files = filesWith(["local y = plot:GetYield(0)", 'local s = "\\', '\\" plot:GetYield()"']);
+  dig.mapApi(memory, files, memory.discovery);
+  const keys = dig.probeCandidates(memory.discovery, { limit: 50 }).map((e) => `${e.holder}:${e.method}`);
+  assert.ok(!keys.includes("Plot:GetYield"), "an escaped quote must not make GetYield look like a safe zero-argument getter");
+});
+
 test("dig status only moves forward, blocked is recorded, and notes accumulate", () => {
   const memory = fakeMemory();
   const dmap = memory.discovery;

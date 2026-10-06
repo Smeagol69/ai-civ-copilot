@@ -73,9 +73,27 @@ function longBracketOpen(line, i) {
 function codeOnly(line, state) {
   let out = "";
   let i = 0;
-  let { mode = null, closer = null } = state || {};
+  let { mode = null, closer = null, escaped = false } = state || {};
   const n = line.length;
   while (i < n) {
+    // A short quoted string processes backslash escapes - \" inside it is
+    // a literal quote character, not the terminator - so resuming one
+    // after a backslash-newline continuation must scan the same way it
+    // was opened, not with a plain indexOf. A long-bracket span (comment
+    // or [=*[ ]=*] string) never processes escapes, so its exact-literal
+    // closer search is already correct and must stay separate from this.
+    if (mode === "string" && escaped) {
+      while (i < n && line[i] !== closer) {
+        if (line[i] === "\\") i++;
+        i++;
+      }
+      if (i >= n) return { out, state: { mode, closer, escaped } };
+      i++;
+      mode = null;
+      closer = null;
+      escaped = false;
+      continue;
+    }
     if (mode) {
       const end = line.indexOf(closer, i);
       if (end === -1) return { out, state: { mode, closer } };
@@ -102,7 +120,7 @@ function codeOnly(line, state) {
         if (line[i] === "\\") i++;
         i++;
       }
-      if (i >= n) return { out, state: { mode: "string", closer: ch } };
+      if (i >= n) return { out, state: { mode: "string", closer: ch, escaped: true } };
       i++;
       continue;
     }
@@ -119,7 +137,7 @@ function codeOnly(line, state) {
     out += ch;
     i++;
   }
-  return { out, state: { mode, closer } };
+  return { out, state: { mode, closer, escaped } };
 }
 
 // One pass over every shipped .lua/.ltp line: method name -> call sites.
