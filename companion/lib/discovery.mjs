@@ -104,7 +104,11 @@ export class DiscoveryMap {
     const cur = this.data.entries[k] || { state, holder, method, status: "unknown", notes: [] };
     const next = { ...cur, ...patch, notes: [...(cur.notes || []), ...(patch.note ? [`${new Date().toISOString().slice(0, 10)} ${patch.note}`] : [])] };
     delete next.note;
-    if (patch.status && cur.status !== "blocked" && patch.status !== "blocked" && order.indexOf(patch.status) < order.indexOf(cur.status)) next.status = cur.status;
+    // Mapping and read-only probes add evidence, but cannot clear an explicit
+    // block. Keep merging what they learned; a deliberate proven/ability
+    // record can still promote the entry after the unsafe call is resolved.
+    if (cur.status === "blocked" && ["unknown", "evidenced", "probed"].includes(patch.status)) next.status = cur.status;
+    else if (patch.status && cur.status !== "blocked" && patch.status !== "blocked" && order.indexOf(patch.status) < order.indexOf(cur.status)) next.status = cur.status;
     this.data.entries[k] = next;
     return next;
   }

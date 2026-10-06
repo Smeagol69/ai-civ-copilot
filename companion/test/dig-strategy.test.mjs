@@ -82,6 +82,71 @@ test("dig status only moves forward, blocked is recorded, and notes accumulate",
   assert.ok(!dig.frontier(again).some((e) => e.method === "ChangeLoyalty"), "done items leave the frontier");
 });
 
+test("remapping and reloading keep blocked functions out of the frontier and probes", () => {
+  const memory = fakeMemory();
+  const files = fakeFiles();
+  dig.mapApi(memory, files, memory.discovery);
+  for (const method of ["ChangeLoyalty", "GetPopulation", "SetName"]) {
+    memory.discovery.update("GameCore_Tuner", "City", method, { status: "blocked", note: `${method} has an unsafe call shape` });
+  }
+  memory.discovery.save();
+  const dmap = new dig.DiscoveryMap(memory.dir);
+  const notes = dmap.get("GameCore_Tuner", "City", "ChangeLoyalty").notes;
+  const originalLines = files.lines;
+  files.lines = (f) => originalLines(f).map((line) => line.replace("ChangeLoyalty(10)", "ChangeLoyalty(20)"));
+  dig.mapApi(memory, files, dmap);
+  for (const method of ["ChangeLoyalty", "GetPopulation", "SetName"]) {
+    assert.equal(dmap.get("GameCore_Tuner", "City", method).status, "blocked", `${method} must remain blocked with or without evidence`);
+  }
+  assert.match(dmap.get("GameCore_Tuner", "City", "ChangeLoyalty").evidence.sites[0].code, /ChangeLoyalty\(20\)/, "evidence still refreshes");
+  assert.ok(!dig.frontier(dmap).some((e) => e.method === "ChangeLoyalty"));
+  assert.ok(!dig.probeCandidates(dmap).some((e) => e.method === "GetPopulation"));
+  const again = new dig.DiscoveryMap(memory.dir);
+  assert.equal(again.get("GameCore_Tuner", "City", "ChangeLoyalty").status, "blocked");
+  assert.equal(again.get("GameCore_Tuner", "City", "GetPopulation").status, "blocked");
+  assert.deepEqual(again.get("GameCore_Tuner", "City", "ChangeLoyalty").notes, notes);
+});
+
+test("a probe settling after a function was blocked retains the block and the learned result", async () => {
+  const memory = fakeMemory();
+  dig.mapApi(memory, fakeFiles(), memory.discovery);
+  let release;
+  const reply = new Promise((resolve) => { release = resolve; });
+  const game = { lua: async (_state, _lua, { params }) => {
+    assert.ok(params.calls.some((c) => c.key === "City|GetPopulation"), "the getter was selected before it was blocked");
+    return reply;
+  } };
+  const pending = dig.probeBatch(game, memory.discovery);
+  memory.discovery.update("GameCore_Tuner", "City", "GetPopulation", { status: "blocked", note: "the native call is unsafe" });
+  release({ value: [{ key: "City|GetPopulation", type: "number", value: 3 }] });
+  await pending;
+  const again = new dig.DiscoveryMap(memory.dir);
+  const entry = again.get("GameCore_Tuner", "City", "GetPopulation");
+  assert.equal(entry.status, "blocked", "an in-flight read must not reopen a blocked function");
+  assert.equal(entry.probe.value, 3, "the completed read is still learned");
+  assert.match(entry.notes[0], /the native call is unsafe/);
+  assert.ok(!dig.probeCandidates(again).some((e) => e.method === "GetPopulation"));
+});
+
+test("blocked functions can still be deliberately proven or saved as abilities", () => {
+  const memory = fakeMemory();
+  const files = fakeFiles();
+  const dmap = memory.discovery;
+  dig.mapApi(memory, files, dmap);
+  for (const [method, status] of [["ChangeLoyalty", "proven"], ["SetName", "ability"]]) {
+    dmap.update("GameCore_Tuner", "City", method, { status: "blocked", note: "call shape was unknown" });
+    dmap.update("GameCore_Tuner", "City", method, { status, note: "the corrected call shape was verified" });
+  }
+  dig.mapApi(memory, files, dmap);
+  const again = new dig.DiscoveryMap(memory.dir);
+  for (const [method, status] of [["ChangeLoyalty", "proven"], ["SetName", "ability"]]) {
+    const entry = again.get("GameCore_Tuner", "City", method);
+    assert.equal(entry.status, status);
+    assert.equal(entry.notes.length, 2, "both the block and later verification stay recorded");
+  }
+  assert.ok(!dig.frontier(again).some((e) => e.method === "ChangeLoyalty"));
+});
+
 const STANDING = {
   turn: 271, me: 0, victories: ["VICTORY_TECHNOLOGY", "VICTORY_CULTURE", "VICTORY_CONQUEST", "VICTORY_SCORE"],
   players: [
