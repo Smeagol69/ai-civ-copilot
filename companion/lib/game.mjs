@@ -78,7 +78,11 @@ export function decodeLines(lines) {
     try {
       value = JSON.parse(raw);
     } catch (err) {
-      throw new Error(`could not parse JSON from game (${raw.length} chars): ${err.message}`);
+      // decodeLines only ever runs after Game.exec has already resolved -
+      // the CMD reached the game and ran to completion, so a malformed
+      // reply here means the write already happened, unlike a transport or
+      // guard error where the CMD may never have been sent at all.
+      throw Object.assign(new Error(`could not parse JSON from game (${raw.length} chars): ${err.message}`), { code: "decode" });
     }
   }
   return { value, text };

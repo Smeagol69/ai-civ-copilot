@@ -19,6 +19,10 @@ test("decodeLines joins JSON chunks and keeps plain lines", () => {
   assert.equal(value.a.length, 2000);
   assert.deepEqual(text, ["hello"]);
   assert.throws(() => decodeLines(["J{bad"]), /could not parse JSON/);
+  // decodeLines only ever runs after the CMD already completed in the game
+  // (Game.exec resolved) - callers use this code to tell a malformed reply
+  // apart from a transport error or a guard refusal that never sent it.
+  assert.throws(() => decodeLines(["J{bad"]), (err) => err.code === "decode");
 });
 
 test("scripts get the prelude and params", () => {

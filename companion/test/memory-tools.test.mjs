@@ -182,6 +182,63 @@ test("save_ability's test run marks the snapshot stale even when it only reports
   assert.equal(ctx.staleCount, 1, "the write before the ok=false report still happened");
 });
 
+test("run_lua marks the snapshot stale when the game's reply is malformed JSON after it already ran", async () => {
+  const memory = tmpMemory();
+  // decodeLines only ever runs after Game.exec resolved - the CMD reached
+  // the game and the body ran in full before the reply failed to parse.
+  const ctx = fakeCtx(memory, async () => { throw Object.assign(new Error("could not parse JSON from game (9 chars): Unexpected token"), { code: "decode" }); });
+  const r = JSON.parse((await runTool(ctx, "run_lua", { state: "GameCore_Tuner", code: "Players[0]:GetTreasury():ChangeGoldBalance(1) emit('Job done')" })).content);
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "decode");
+  assert.equal(ctx.staleCount, 1, "a malformed reply still follows a completed write");
+});
+
+test("a saved ability also marks the snapshot stale when its reply is malformed JSON after it already ran", async () => {
+  const memory = tmpMemory();
+  memory.saveAbility({
+    name: "writes_then_garbles", description: "Writes something, then returns unparseable text.", state: "GameCore_Tuner",
+    lua: "Players[0]:GetTreasury():ChangeGoldBalance(P.amount) emit('Job done')", properties: { amount: { type: "integer" } }, required: ["amount"], kind: "play",
+  });
+  const ctx = fakeCtx(memory, async () => { throw Object.assign(new Error("could not parse JSON from game (9 chars): Unexpected token"), { code: "decode" }); });
+  const r = JSON.parse((await runTool(ctx, "ability__writes_then_garbles", { amount: 5 })).content);
+  assert.equal(r.ok, false);
+  assert.equal(ctx.staleCount, 1, "a malformed reply still follows a completed write");
+});
+
+test("run_lua still marks the snapshot stale when the journal write itself fails after a real write", async () => {
+  const memory = tmpMemory();
+  memory.record = () => { throw new Error("ENOENT: no such file or directory, open 'journal.jsonl'"); };
+  const ctx = fakeCtx(memory, async () => ({ value: { gold: 9000 }, text: ["hi"] }));
+  const r = await runTool(ctx, "run_lua", { state: "GameCore_Tuner", code: "Players[0]:GetTreasury():ChangeGoldBalance(1)" });
+  assert.equal(r.isError, true);
+  assert.match(r.content, /ENOENT/);
+  assert.equal(ctx.staleCount, 1, "the write happened for real - a broken journal must not hide that from the cache");
+});
+
+test("run_lua still marks the snapshot stale when both the call and the journal write fail", async () => {
+  const memory = tmpMemory();
+  memory.record = () => { throw new Error("ENOENT: no such file or directory, open 'journal.jsonl'"); };
+  const ctx = fakeCtx(memory, async () => { throw Object.assign(new Error("tuner reset mid-call"), { code: "timeout" }); });
+  const r = await runTool(ctx, "run_lua", { state: "GameCore_Tuner", code: "Players[0]:GetTreasury():ChangeGoldBalance(1)" });
+  assert.equal(r.isError, true);
+  assert.match(r.content, /ENOENT/);
+  assert.equal(ctx.staleCount, 1, "a timeout that may have landed must invalidate before the also-broken journal write runs");
+});
+
+test("a saved ability still marks the snapshot stale when local bookkeeping fails after a real write", async () => {
+  const memory = tmpMemory();
+  memory.saveAbility({
+    name: "writes_then_bookkeeping_fails", description: "Writes something; bookkeeping is broken.", state: "GameCore_Tuner",
+    lua: "Players[0]:GetTreasury():ChangeGoldBalance(P.amount)", properties: { amount: { type: "integer" } }, required: ["amount"], kind: "play",
+  });
+  memory.markAbilityUsed = () => { throw new Error("ENOENT: no such file or directory, open 'abilities.json'"); };
+  const ctx = fakeCtx(memory, async () => ({ value: { ok: true }, text: [] }));
+  const r = await runTool(ctx, "ability__writes_then_bookkeeping_fails", { amount: 5 });
+  assert.equal(r.isError, true);
+  assert.match(r.content, /ENOENT/);
+  assert.equal(ctx.staleCount, 1, "the write happened for real - broken bookkeeping must not hide that from the cache");
+});
+
 test("perform_action refuses bad args before touching the game", async () => {
   const memory = tmpMemory();
   const ctx = fakeCtx(memory);

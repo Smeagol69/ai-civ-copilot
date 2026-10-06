@@ -25,8 +25,11 @@ const SECTIONS = ["meta", "me", "techs", "civics", "cities", "units", "players",
 // body inside pcall(), so a runtime error means every statement before the
 // one that failed already ran for real - unlike a compile error or a guard
 // refusal (paused, core-locked, not-found), none of which ever reach the
-// game. This is only about whether the snapshot cache can still be trusted.
-const mayHaveMutatedGame = (err) => isTransportError(err) || err?.code === "runtime";
+// game. A "decode" error (game.mjs's decodeLines) is stronger still: it only
+// ever happens after Game.exec has already resolved, so the whole body ran
+// to completion and only the JSON reply was malformed. This is only about
+// whether the snapshot cache can still be trusted.
+const mayHaveMutatedGame = (err) => isTransportError(err) || err?.code === "runtime" || err?.code === "decode";
 
 const obj = (properties = {}, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 const S = (description) => ({ type: "string", description });
@@ -308,15 +311,20 @@ export async function dispatchTool(ctx, name, input = {}) {
       ctx.onProgress?.(`Running Lua in ${input.state}`);
       try {
         const { value, text } = await game.lua(input.state, input.code, { params: input.params || {}, timeoutMs: input.timeoutMs ?? 20000 });
-        memory.record({ type: "lua", state: input.state, code: input.code.slice(0, 4000), ok: true, output: clip({ value, text }).slice(0, 2000) });
+        // The call already completed in the game - mark stale before the
+        // fallible journal write below, so a journal error (e.g. ENOENT)
+        // can never skip invalidating a cache that is now genuinely wrong.
         ctx.markStale();
+        memory.record({ type: "lua", state: input.state, code: input.code.slice(0, 4000), ok: true, output: clip({ value, text }).slice(0, 2000) });
         return { ok: true, value, output: text };
       } catch (err) {
-        memory.record({ type: "lua", state: input.state, code: input.code.slice(0, 4000), ok: false, error: err.message });
         // The code may have partially or fully run before this error
-        // surfaced (a transport error after send, or a runtime error partway
-        // through the body) - the cached snapshot can no longer be trusted.
+        // surfaced (a transport error after send, a runtime error partway
+        // through the body, or a decode error after full completion) - mark
+        // stale before the (also fallible) journal write, for the same
+        // reason as above.
         if (mayHaveMutatedGame(err)) ctx.markStale();
+        memory.record({ type: "lua", state: input.state, code: input.code.slice(0, 4000), ok: false, error: err.message });
         return { ok: false, error: err.message, kind: err.code };
       }
     }
@@ -434,17 +442,20 @@ export async function dispatchTool(ctx, name, input = {}) {
         try {
           const { value, text } = await game.lua(a.state, a.lua, { params: input });
           const ok = !(value && value.ok === false);
+          // The call already completed in the game - mark stale before the
+          // fallible local bookkeeping below, so a bookkeeping error can
+          // never skip invalidating a cache that is now genuinely wrong.
+          if (a.kind !== "query") ctx.markStale();
           memory.markAbilityUsed(a.name, ok);
-          if (a.kind !== "query") {
-            memory.record({ type: "ability", name: a.name, params: input, ok, result: clip(value).slice(0, 2000) });
-            ctx.markStale();
-          }
+          if (a.kind !== "query") memory.record({ type: "ability", name: a.name, params: input, ok, result: clip(value).slice(0, 2000) });
           return { ok, value, output: text };
         } catch (err) {
-          memory.markAbilityUsed(a.name, false);
           // Same risk as run_lua: the ability's Lua may have partially or
-          // fully run in the game before this error surfaced.
+          // fully run in the game before this error surfaced. Mark stale
+          // before the (also fallible) bookkeeping call, for the same
+          // reason as above.
           if (a.kind !== "query" && mayHaveMutatedGame(err)) ctx.markStale();
+          memory.markAbilityUsed(a.name, false);
           return { ok: false, error: err.message };
         }
       }
