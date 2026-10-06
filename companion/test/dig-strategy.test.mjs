@@ -228,6 +228,38 @@ test("an escaped quote on a resumed string does not make the probe-safety gate w
   assert.ok(!keys.includes("Plot:GetYield"), "an escaped quote must not make GetYield look like a safe zero-argument getter");
 });
 
+test("a method declaration head is not mistaken for a real call", () => {
+  // "function plot:GetYield() ... end" defines the method; it never calls
+  // it. The receiver:Method( text is identical to a real call, so the old
+  // regex recorded it as confirmed zero-argument evidence anyway.
+  const files = filesWith(["function plot:GetYield() return 0 end"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.equal(e, undefined, "a declaration head is not a call; it must not be recorded as evidence at all");
+});
+
+test("a real call elsewhere is unaffected by a declaration of the same method", () => {
+  const files = filesWith(["function plot:GetYield() return 0 end", "local y = otherplot:GetYield(5)"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e, "the real call is still recorded as evidence");
+  assert.equal(e.count, 1, "only the real call counts; the declaration head does not");
+  assert.equal(e.zeroArg, false, "the real call takes an argument; the declaration's empty parameter list must not override that");
+});
+
+test("a real call inside a function's own body is still recorded, even though its declaration head is not", () => {
+  const files = filesWith(["function City:DoSomething() pCity:GetPopulation() end"]);
+  const e = dig.indexCallSites(files).get("GetPopulation");
+  assert.ok(e, "the call inside the function body is real code and is still recorded");
+  assert.ok(e.zeroArg, "it is a genuine zero-argument call");
+});
+
+test("a method declaration head does not make the probe-safety gate wrongly treat the function as zero-argument", () => {
+  const memory = fakeMemory();
+  const files = filesWith(["function plot:GetYield() return 0 end"]);
+  dig.mapApi(memory, files, memory.discovery);
+  const keys = dig.probeCandidates(memory.discovery, { limit: 50 }).map((e) => `${e.holder}:${e.method}`);
+  assert.ok(!keys.includes("Plot:GetYield"), "a declaration must not make GetYield look like a safe zero-argument getter");
+});
+
 test("dig status only moves forward, blocked is recorded, and notes accumulate", () => {
   const memory = fakeMemory();
   const dmap = memory.discovery;

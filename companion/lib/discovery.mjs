@@ -149,6 +149,13 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
   // would otherwise look identical to a confirmed same-line zero-argument
   // call. The zero-arg inference below requires that group to be present.
   const re = /([A-Za-z_][A-Za-z0-9_]*)\s*([:.])\s*([A-Z][A-Za-z0-9_]*)\s*\(([^()]*)(\))?/g;
+  // "function plot:GetYield() ... end" defines the method; it never calls
+  // it. The receiver:Method( text a declaration head produces is identical
+  // to a real call, so a match immediately preceded by the bare keyword
+  // "function" is a definition, not evidence, and must be skipped outright
+  // (a genuine call elsewhere, including inside that function's own body,
+  // is a separate match with different preceding text and is unaffected).
+  const DECLARATION_HEAD = /\bfunction\s*$/;
   for (const f of files.list()) {
     const lower = f.toLowerCase();
     if (!lower.endsWith(".lua") && !lower.endsWith(".ltp")) continue;
@@ -166,6 +173,7 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
       state = stripped.state;
       if (line.length > 400) continue;
       for (const m of stripped.out.matchAll(re)) {
+        if (DECLARATION_HEAD.test(stripped.out.slice(0, m.index))) continue;
         const method = m[3];
         let e = index.get(method);
         if (!e) index.set(method, (e = { count: 0, sites: [], contexts: new Set(), zeroArg: false, zeroArgVars: new Set() }));
