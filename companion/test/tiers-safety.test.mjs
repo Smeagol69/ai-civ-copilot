@@ -168,6 +168,41 @@ test("a direct client (establishCoreLock) starts fail-closed and stays locked un
   }
 });
 
+test("an explicit reconnect while already connected invalidates the facts for an opted-in direct client", async () => {
+  // tuner.connect() does not check this.connected at all - only
+  // this.connecting (whether a connect is already in progress). Calling it
+  // while already fully connected still runs a full #connect(), whose
+  // #attach(newSock) silently detaches the old, still-live socket. That
+  // old socket really was the established session; losing it must notify
+  // the same way a timeout or a remote drop already does.
+  let phase = "sp";
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      return phase === "sp"
+        ? ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true })
+        : ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true });
+    }
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    assert.equal((await game.lua(CORE_STATE, "emitJson(1)")).value.ran, "GameCore_Tuner", "the first session is single player");
+    assert.equal(game.coreLocked, null);
+
+    phase = "mp";
+    // #attach's own detach of the old socket happens synchronously inside
+    // #connect(), before connect() itself resolves - no need to wait for
+    // the "close" event separately.
+    await game.tuner.connect(); // deliberate explicit reconnect while already connected
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked",
+      "the explicit reconnect must not let the old session's facts survive into the new one");
+    assert.equal(game.coreLocked, MP_LOCK);
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
 test("two concurrent first core calls share one facts read and both succeed once it resolves (single player)", async () => {
   // coreLockEstablished was set true synchronously purely to stop a second
   // concurrent caller from starting its own redundant read - but that also

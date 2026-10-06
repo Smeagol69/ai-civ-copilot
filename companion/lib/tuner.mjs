@@ -269,6 +269,10 @@ export class TunerClient extends EventEmitter {
       }
       if (hs.app || hs.states.length) {
         this.port = port;
+        // Confirmed as the real connection, not just a scanned candidate -
+        // #detach and the socket's own "close" handler use this to decide
+        // whether losing it is a genuine loss of service worth notifying.
+        sock.established = true;
         return;
       }
       notes.push(`${port}: accepted but never answered (load screen, or not a Civ VI tuner)`);
@@ -315,7 +319,10 @@ export class TunerClient extends EventEmitter {
       if (this.socket !== sock) return;
       this.socket = null;
       this.#failWaiters();
-      this.emit("close");
+      // A candidate dropped mid-scan, before its handshake ever confirmed
+      // it, was never providing real service - only a confirmed socket's
+      // loss is worth notifying (see #connect's sock.established).
+      if (sock.established) this.emit("close");
     });
     sock.on("error", (err) => this.log(`tuner socket error: ${err.message}`));
   }
@@ -326,16 +333,19 @@ export class TunerClient extends EventEmitter {
     sock.destroy();
     if (current) {
       this.#failWaiters();
-      // Nulling this.socket above means the socket's own "close" handler
-      // (which checks this.socket === sock) will skip its emit when the
-      // close actually lands - deliberately, so a port rejected mid-scan in
-      // #connect never emits (connecting stays set for that whole scan, so
-      // it never had a working session to lose). But #detach is also how a
-      // timeout reset, an explicit close(), and corrupt-stream recovery
-      // tear down a connection that *was* in use, and those are exactly the
-      // moments a caller needs to know about to re-verify anything it
-      // learned over this connection.
-      if (!this.connecting) this.emit("close");
+      // Socket provenance, not this.connecting, decides whether to notify:
+      // this.connecting is true for the whole duration of any #connect()
+      // call, including an explicit reconnect while already connected
+      // (#attach's own detach of the still-live old socket happens inside
+      // that call) and the window where a new candidate is still being
+      // probed while the old established socket remains current and could
+      // independently be torn down by a timeout or close() elsewhere.
+      // Neither case should be silent: sock.established is only set once a
+      // candidate's handshake actually confirms it (never for one rejected
+      // mid-scan), so it tracks exactly what matters - was this socket ever
+      // the real, in-service connection - regardless of what else is
+      // happening concurrently.
+      if (sock.established) this.emit("close");
     }
   }
 
