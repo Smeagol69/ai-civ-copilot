@@ -80,6 +80,21 @@ test("risky edits copy Firaxis' call shapes", () => {
   assert.match(b.unit_operation, /startsWar/);
 });
 
+test("DELETE is confirmed only by the unit's authoritative absence, not any unrelated change", () => {
+  // verify_unit_command otherwise falls through to the generic
+  // unitChanged(before, after), which is an OR across exists/x/y/moves/
+  // damage/activity - a unit that survives the delete request but merely
+  // moved, took unrelated damage, or changed activity during the read-back
+  // delay would satisfy that and wrongly confirm a delete that never
+  // happened. The DELETE branch must set ok from existence alone.
+  const body = actionBodies().verify_unit_command;
+  assert.match(
+    body,
+    /P\.command == 'UNITCOMMAND_DELETE' then[\s\S]*?o\.ok = after\.exists == false/,
+    "a DELETE-specific branch must confirm by authoritative absence, before the generic any-change fallback",
+  );
+});
+
 test("verify gets the action's verifyArgs; they are not shown to the caller", async () => {
   const seen = [];
   const fake = await startFakeTuner((ctx) => {

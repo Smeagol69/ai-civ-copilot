@@ -536,6 +536,14 @@ function A.verify_unit_command(P)
     o.ok = o.unitType ~= P.typeBefore
     return o
   end
+  if P.command == 'UNITCOMMAND_DELETE' then
+    -- unitChanged is an OR across exists/x/y/moves/damage/activity; a
+    -- surviving unit's unrelated move, damage or activity change during the
+    -- read-back delay must never be read as a confirmed delete. Only the
+    -- unit's authoritative absence does.
+    o.ok = after.exists == false
+    return o
+  end
   o.ok = unitChanged(P.before, after)
   return o
 end
