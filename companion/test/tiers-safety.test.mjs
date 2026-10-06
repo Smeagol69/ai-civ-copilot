@@ -388,6 +388,14 @@ test("multiplayer lock: network or Play By Cloud with other people locks; single
     "a failed read must not unlock an already-known multiplayer game either");
   assert.equal(multiplayerLock({ mp: true, cloud: false, humans: 5, factsOk: true }, UNKNOWN_LOCK), MP_LOCK,
     "a reliable read still locks normally");
+  // "A failed read keeps the current lock" is only safe when the current
+  // lock is already restrictive. A *previous* reliable read confirming
+  // single player (current === null) is not a fact that keeps being true
+  // on its own - losing the ability to re-verify it must mean "unknown",
+  // not "still trusted", or a core edit could land while the real status
+  // is genuinely unverified (reviewer's prior-SP-then-failed-getter case).
+  assert.equal(multiplayerLock({ mp: false, cloud: false, humans: null, factsOk: false }, null), UNKNOWN_LOCK,
+    "an unreliable read after a confirmed single-player session must not stay unlocked");
 });
 
 test("a lock applied while a call is queued prevents its command from reaching the game", async () => {

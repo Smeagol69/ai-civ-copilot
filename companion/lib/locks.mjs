@@ -19,8 +19,17 @@ export const UNKNOWN_LOCK = "The copilot has not yet seen what kind of game this
 // on a read that never actually happened. factsOk === false is reported by
 // both; its absence (every caller before this field existed) is treated as
 // reliable, so this is backward compatible.
+//
+// "Keep the current lock" is only safe when current is already
+// restrictive. If current is null - a *previous* reliable read confirmed
+// single player - that confirmation does not keep being true on its own;
+// losing the ability to re-verify it must mean "unknown" again, not "still
+// trusted", or a core edit could land while the real status is genuinely
+// unverified. current || UNKNOWN_LOCK keeps any existing restrictive lock
+// exactly as before and only changes the null case.
 export function multiplayerLock(poll, current) {
-  if (!poll || poll.mp === undefined || poll.factsOk === false) return current;
+  if (!poll || poll.mp === undefined) return current;
+  if (poll.factsOk === false) return current || UNKNOWN_LOCK;
   const shared = !!(poll.mp || poll.cloud);
   // Not networked: one machine, nothing to desync. Networked with an unknown
   // head-count: assume other people are there.
