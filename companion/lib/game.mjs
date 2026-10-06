@@ -149,7 +149,13 @@ export class Game {
     if (this.coreLockEstablished) return;
     this.coreLockEstablished = true;
     try {
-      const { value } = await this.lua(UI_STATE, MP_FACTS_LUA, { force: true, timeoutMs: 5000 });
+      // No force:true here on purpose: UI_STATE already passes #guard's
+      // coreLocked check with force:false (it's in CORE_LOCK_ALLOWED), so
+      // force was never needed for that - its only real effect was also
+      // bypassing paused, including at the tuner's beforeSend recheck for a
+      // pause that lands while this call is queued or mutex-blocked. This
+      // read must obey pause exactly like every other non-forced call.
+      const { value } = await this.lua(UI_STATE, MP_FACTS_LUA, { timeoutMs: 5000 });
       this.coreLocked = multiplayerLock(value, this.coreLocked);
     } catch {
       // Could not read the facts yet (not connected, game not loaded) -

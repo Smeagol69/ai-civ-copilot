@@ -425,3 +425,80 @@ test("pausing while a command waits for the machine-wide mutex is checked before
     await fake.close();
   }
 });
+
+test("a direct client's implicit bootstrap obeys a pause that lands while it is queued behind another call", async () => {
+  // The round-4 fix only checked !this.paused before starting the implicit
+  // facts read - too early to catch a pause that lands while that read is
+  // still queued behind an earlier call.
+  let releaseFirst;
+  const held = new Promise((resolve) => { releaseFirst = resolve; });
+  let firstStarted;
+  const started = new Promise((resolve) => { firstStarted = resolve; });
+  const sent = [];
+  const fake = await startFakeTuner(async (ctx) => {
+    sent.push(ctx.state);
+    if (sent.length === 1) {
+      firstStarted();
+      await held;
+    }
+    ctx.emitJson({ mp: true, cloud: false, humans: 5 });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    await game.ensureConnected();
+    const first = game.lua(UI_STATE, "emitJson({ok=true})");
+    await started;
+    const core = game.lua(CORE_STATE, "emitJson({ok=true})");
+    // Give the async entry path time to queue the implicit facts read.
+    await new Promise((resolve) => setImmediate(resolve));
+    game.paused = "loading";
+    const rejected = assert.rejects(core, (e) => e.code === "paused");
+    releaseFirst();
+    await first;
+    await rejected;
+    assert.deepEqual(sent, [UI_STATE], "the queued implicit facts read was never sent once paused");
+    assert.equal(game.coreLocked, UNKNOWN_LOCK, "nothing was learned while paused");
+  } finally {
+    releaseFirst();
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
+test("a direct client's implicit bootstrap obeys a pause that lands while it waits for the machine-wide mutex", async () => {
+  let releaseLock;
+  let lockStarted;
+  const waiting = new Promise((resolve) => { lockStarted = resolve; });
+  const held = new Promise((resolve) => { releaseLock = resolve; });
+  let acquisitions = 0;
+  let releases = 0;
+  const lock = {
+    async acquire() {
+      if (++acquisitions > 1) {
+        lockStarted();
+        await held;
+      }
+    },
+    async release() { releases++; },
+  };
+  const fake = await startFakeTuner((ctx) => ctx.emitJson({ mp: true, cloud: false, humans: 5 }));
+  const { TunerClient } = await import("../lib/tuner.mjs");
+  const game = new Game({ tuner: new TunerClient({ port: fake.port, lock }), trace: false, establishCoreLock: true });
+  try {
+    await game.ensureConnected();
+    const core = game.lua(CORE_STATE, "emitJson({ok=true})");
+    await waiting;
+    game.paused = "loading";
+    const rejected = assert.rejects(core, (e) => e.code === "paused");
+    releaseLock();
+    await rejected;
+    assert.equal(fake.received.filter((f) => f.payload.startsWith("CMD:")).length, 0,
+      "nothing was sent after the game became paused, not even the implicit facts read");
+    assert.equal(releases, 2, "both the handshake and the rejected facts read release the mutex");
+    assert.equal(game.coreLocked, UNKNOWN_LOCK, "nothing was learned while paused");
+  } finally {
+    releaseLock();
+    game.tuner.close();
+    await fake.close();
+  }
+});
