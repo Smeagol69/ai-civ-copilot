@@ -115,6 +115,45 @@ test("a multiline call does not make the probe-safety gate wrongly treat the fun
   assert.ok(!keys.includes("Plot:GetYield"), "a multiline call must not make GetYield look like a safe zero-argument getter");
 });
 
+test("a trailing comment mentioning a zero-argument call does not taint the real call on that line", () => {
+  // The real call takes an argument; the trailing comment merely explains
+  // it and is never executed, but the old per-line regex scanned the raw
+  // line text and matched the comment's call-shaped text too.
+  const files = filesWith(["local y = plot:GetYield(0) -- plot:GetYield()"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e, "the real call is still recorded as evidence");
+  assert.equal(e.zeroArg, false, "a trailing comment's call-shaped text must not be inferred as a real zero-argument call");
+});
+
+test("a quoted string literal containing call-shaped text is not mistaken for a real call", () => {
+  const files = filesWith(['local s = "plot:GetYield()"']);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.equal(e, undefined, "text inside a string literal is never executed code");
+});
+
+test("a multi-line block comment containing call-shaped text is not mistaken for a real call", () => {
+  const files = filesWith(["--[[", "plot:GetYield()", "]]"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.equal(e, undefined, "text inside a --[[ ... ]] block comment is never executed code");
+});
+
+test("a call whose only argument is a string literal is still correctly seen as having an argument", () => {
+  // Guards the fix itself: stripping a string literal's contents must not
+  // collapse ChangeName("Rome") into looking like ChangeName() either.
+  const files = filesWith(['local ok = pCity:ChangeName("Rome")']);
+  const e = dig.indexCallSites(files).get("ChangeName");
+  assert.ok(e, "the call is still recorded as evidence");
+  assert.equal(e.zeroArg, false, "a string-literal argument is still an argument");
+});
+
+test("inert text does not make the probe-safety gate wrongly treat the function as zero-argument", () => {
+  const memory = fakeMemory();
+  const files = filesWith(["local y = plot:GetYield(0) -- plot:GetYield()"]);
+  dig.mapApi(memory, files, memory.discovery);
+  const keys = dig.probeCandidates(memory.discovery, { limit: 50 }).map((e) => `${e.holder}:${e.method}`);
+  assert.ok(!keys.includes("Plot:GetYield"), "a trailing comment must not make GetYield look like a safe zero-argument getter");
+});
+
 test("dig status only moves forward, blocked is recorded, and notes accumulate", () => {
   const memory = fakeMemory();
   const dmap = memory.discovery;

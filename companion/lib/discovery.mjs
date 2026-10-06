@@ -42,6 +42,54 @@ function contextOf(rel) {
   return "ui";
 }
 
+// Strip Lua comments and string-literal contents before matching, so a
+// trailing comment that happens to mention a call ("-- plot:GetYield()"),
+// a quoted string containing call-shaped text, or a --[[ ... ]] block
+// comment are never mistaken for executed code. inBlockComment carries
+// --[[ ... ]] state across lines, since a block comment can span many of
+// them. A string literal's content is replaced with a placeholder rather
+// than removed outright - removing it would collapse a call whose only
+// argument is a string literal, e.g. Lookup("LOC_X"), into looking like
+// a zero-argument call.
+function codeOnly(line, inBlockComment) {
+  let out = "";
+  let i = 0;
+  let blockComment = inBlockComment;
+  const n = line.length;
+  while (i < n) {
+    if (blockComment) {
+      const end = line.indexOf("]]", i);
+      if (end === -1) return { out, inBlockComment: true };
+      i = end + 2;
+      blockComment = false;
+      continue;
+    }
+    if (line[i] === "-" && line[i + 1] === "-") {
+      if (line[i + 2] === "[" && line[i + 3] === "[") {
+        const end = line.indexOf("]]", i + 4);
+        if (end === -1) return { out, inBlockComment: true };
+        i = end + 2;
+        continue;
+      }
+      break;
+    }
+    const ch = line[i];
+    if (ch === '"' || ch === "'") {
+      out += ch + "x" + ch;
+      i++;
+      while (i < n && line[i] !== ch) {
+        if (line[i] === "\\") i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return { out, inBlockComment: blockComment };
+}
+
 // One pass over every shipped .lua/.ltp line: method name -> call sites.
 export function indexCallSites(files, { perMethod = 24 } = {}) {
   const index = new Map();
@@ -57,10 +105,13 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
     const rel = path.relative(files.gameDir, f);
     const ctx = contextOf(rel);
     const lines = files.lines ? files.lines(f) : fs.readFileSync(f, "utf8").split(/\r?\n/);
+    let inBlockComment = false;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (line.length > 400 || line.trimStart().startsWith("--")) continue;
-      for (const m of line.matchAll(re)) {
+      if (line.length > 400) continue;
+      const stripped = codeOnly(line, inBlockComment);
+      inBlockComment = stripped.inBlockComment;
+      for (const m of stripped.out.matchAll(re)) {
         const method = m[3];
         let e = index.get(method);
         if (!e) index.set(method, (e = { count: 0, sites: [], contexts: new Set(), zeroArg: false, zeroArgVars: new Set() }));
