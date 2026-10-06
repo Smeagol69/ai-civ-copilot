@@ -324,7 +324,19 @@ export class TunerClient extends EventEmitter {
     const current = this.socket === sock;
     if (current) this.socket = null;
     sock.destroy();
-    if (current) this.#failWaiters();
+    if (current) {
+      this.#failWaiters();
+      // Nulling this.socket above means the socket's own "close" handler
+      // (which checks this.socket === sock) will skip its emit when the
+      // close actually lands - deliberately, so a port rejected mid-scan in
+      // #connect never emits (connecting stays set for that whole scan, so
+      // it never had a working session to lose). But #detach is also how a
+      // timeout reset, an explicit close(), and corrupt-stream recovery
+      // tear down a connection that *was* in use, and those are exactly the
+      // moments a caller needs to know about to re-verify anything it
+      // learned over this connection.
+      if (!this.connecting) this.emit("close");
+    }
   }
 
   // Wake everything waiting on the dead connection right away.

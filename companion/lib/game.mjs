@@ -124,15 +124,20 @@ export class Game {
     this.autoEstablishCoreLock = establishCoreLock;
     if (establishCoreLock) {
       this.coreLocked = UNKNOWN_LOCK;
-      // The tuner emits "close" only on a genuine, unexpected loss of an
-      // already-open connection (never during the normal port-scan/
-      // handshake sequence - see TunerClient#detach, which nulls its own
-      // socket reference before destroying it, so its own cleanup never
-      // self-triggers this). A reconnect after that may land on an
-      // entirely different session (the game closed and reopened, or a
-      // different save loaded) - the facts already established say
-      // nothing about it, so they must be re-verified, not reused.
+      this.connectionEpoch = 0;
+      // The tuner emits "close" on any genuine loss of an already-open
+      // connection (a remote-initiated drop, a timeout reset, an explicit
+      // close(), or corrupt-stream recovery - never during the normal
+      // port-scan/handshake sequence, which never had a working session to
+      // lose). A reconnect after that may land on an entirely different
+      // session (the game closed and reopened, or a different save
+      // loaded) - the facts already established say nothing about it, so
+      // they must be re-verified, not reused. Bumping the epoch also lets
+      // #ensureCoreLockEstablished notice a read that was already in
+      // flight when this happened and discard its now-stale result,
+      // instead of letting it overwrite the fresh invalidation below.
       this.tuner.on("close", () => {
+        this.connectionEpoch++;
         this.coreLocked = UNKNOWN_LOCK;
         this.coreLockEstablished = false;
       });
@@ -166,6 +171,7 @@ export class Game {
   async #ensureCoreLockEstablished() {
     if (this.coreLockEstablished) return;
     this.coreLockEstablished = true;
+    const epoch = this.connectionEpoch;
     try {
       // No force:true here on purpose: UI_STATE already passes #guard's
       // coreLocked check with force:false (it's in CORE_LOCK_ALLOWED), so
@@ -174,6 +180,13 @@ export class Game {
       // pause that lands while this call is queued or mutex-blocked. This
       // read must obey pause exactly like every other non-forced call.
       const { value } = await this.lua(UI_STATE, MP_FACTS_LUA, { timeoutMs: 5000 });
+      if (epoch !== this.connectionEpoch) {
+        // The connection was lost - and coreLocked/coreLockEstablished
+        // already reset - while this read was still in flight. Its reply
+        // belongs to a connection that no longer exists; leave the fresh
+        // invalidation exactly as the close handler set it.
+        return;
+      }
       if (value?.factsOk) {
         this.coreLocked = multiplayerLock(value, this.coreLocked);
       } else {

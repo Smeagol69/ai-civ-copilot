@@ -216,6 +216,94 @@ test("a direct client re-establishes the facts after a lost connection reconnect
   }
 });
 
+test("a direct client re-establishes facts after a call times out and resets the connection", async () => {
+  // A timeout resets the connection through TunerClient#detach, not a
+  // remote-initiated socket close - round 9's fix only covered the latter.
+  let phase = "sp";
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      return phase === "sp"
+        ? ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true })
+        : ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true });
+    }
+    if (/--HANG/.test(ctx.lua)) return "no-end";
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const { TunerClient } = await import("../lib/tuner.mjs");
+  const game = new Game({ tuner: new TunerClient({ port: fake.port, lock: false, lateGraceMs: 10 }), trace: false, establishCoreLock: true });
+  try {
+    assert.equal((await game.lua(CORE_STATE, "emitJson(1)")).value.ran, "GameCore_Tuner", "the first session is single player");
+    assert.equal(game.coreLocked, null);
+
+    phase = "mp";
+    // The timeout handler calls #detach synchronously, before the rejection
+    // settles, so by the time this rejects any "close" effects already ran.
+    await assert.rejects(game.lua(UI_STATE, "emitJson(1) --HANG", { timeoutMs: 10 }), (e) => e.code === "timeout");
+    assert.equal(game.tuner.connected, false, "the timeout reset the connection");
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked",
+      "a timeout-triggered reset must not reuse the previous session's facts either - the new session is multiplayer");
+    assert.equal(game.coreLocked, MP_LOCK);
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
+test("a direct client's in-flight facts read cannot overwrite a disconnect that happened while it was waiting to resolve", async () => {
+  // The read's reply can already be fully received while tuner.exec() is
+  // still waiting on an async mutex release before its promise resolves -
+  // a disconnect that lands in that window must not be undone by the
+  // stale reply arriving afterward.
+  let phase = "sp";
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      return phase === "sp"
+        ? ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true })
+        : ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true });
+    }
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  let releaseStarted;
+  const releaseWaiting = new Promise((resolve) => { releaseStarted = resolve; });
+  let releaseGate;
+  const gated = new Promise((resolve) => { releaseGate = resolve; });
+  let releases = 0;
+  const lock = {
+    async acquire() {},
+    async release() {
+      releases++;
+      // The 1st release is the connect handshake's; the 2nd is the implicit
+      // facts read's own - its reply has already arrived by this point.
+      if (releases === 2) {
+        releaseStarted();
+        await gated;
+      }
+    },
+  };
+  const { TunerClient } = await import("../lib/tuner.mjs");
+  const game = new Game({ tuner: new TunerClient({ port: fake.port, lock }), trace: false, establishCoreLock: true });
+  try {
+    const core = game.lua(CORE_STATE, "emitJson(1)");
+    await releaseWaiting;
+    const closed = new Promise((resolve) => game.tuner.once("close", resolve));
+    fake.dropAll();
+    await closed;
+    phase = "mp";
+    releaseGate();
+    await assert.rejects(core, (e) => e.code === "core-locked",
+      "a stale in-flight reply must not re-unlock after the disconnect already invalidated it");
+    // The stale reply is discarded outright, not replaced with a guessed
+    // answer - coreLockEstablished stays false too, so the next call (not
+    // this one) does a fresh read and would correctly see the new MP5 game.
+    assert.equal(game.coreLocked, UNKNOWN_LOCK, "refused now and left to re-verify later, not upgraded to a guessed MP_LOCK");
+    assert.equal((await game.lua(CORE_STATE, "emitJson(1)").catch((e) => e)).code, "core-locked");
+    assert.equal(game.coreLocked, MP_LOCK, "a fresh call does re-read and correctly finds the new session is multiplayer");
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
 test("a direct client that cannot read the facts yet stays locked and retries on the next call", async () => {
   let attempts = 0;
   const fake = await startFakeTuner((ctx) => {
