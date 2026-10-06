@@ -95,11 +95,18 @@ function codeOnly(line, state) {
       continue;
     }
     if (mode) {
+      const wasComment = mode === "comment";
       const end = line.indexOf(closer, i);
       if (end === -1) return { out, state: { mode, closer } };
       i = end + closer.length;
       mode = null;
       closer = null;
+      // A comment contributes no code, but removing it must not glue
+      // whatever preceded it (possibly on an earlier line) directly onto
+      // whatever follows - "function" and "plot" must stay two tokens,
+      // never fuse into "functionplot". A string's placeholder was
+      // already added when it was opened, so it needs nothing more here.
+      if (wasComment) out += " ";
       continue;
     }
     if (line[i] === "-" && line[i + 1] === "-") {
@@ -108,6 +115,7 @@ function codeOnly(line, state) {
         const end = line.indexOf(open.closer, open.end);
         if (end === -1) return { out, state: { mode: "comment", closer: open.closer } };
         i = end + open.closer.length;
+        out += " ";
         continue;
       }
       break;
@@ -151,11 +159,21 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
   const re = /([A-Za-z_][A-Za-z0-9_]*)\s*([:.])\s*([A-Z][A-Za-z0-9_]*)\s*\(([^()]*)(\))?/g;
   // "function plot:GetYield() ... end" defines the method; it never calls
   // it. The receiver:Method( text a declaration head produces is identical
-  // to a real call, so a match immediately preceded by the bare keyword
-  // "function" is a definition, not evidence, and must be skipped outright
-  // (a genuine call elsewhere, including inside that function's own body,
-  // is a separate match with different preceding text and is unaffected).
-  const DECLARATION_HEAD = /\bfunction\s*$/;
+  // to a real call, so a match preceded (immediately, or through a dotted
+  // qualifier chain like "ns.plot:") by the bare keyword "function" is a
+  // definition, not evidence, and must be skipped outright. The qualifier
+  // group has no \s+ of its own - "a.b.c" has no whitespace between its
+  // own segments, only between "function" and the first one - while a
+  // genuine call elsewhere, including inside that function's own body, has
+  // different preceding text (no "function" keyword at all) and matches.
+  // \s* (not \s+) after "function": this same regex also recomputes the
+  // carried-forward declTail at the very end of a line, where "function"
+  // may be the last character seen so far with no trailing whitespace yet
+  // - the line break supplies it once concatenated with the next line.
+  // Real Lua source can never glue "function" directly onto an identifier
+  // (that would tokenize as one longer identifier, not two separate
+  // tokens), so relaxing this to zero-or-more introduces no new risk.
+  const DECLARATION_HEAD = /\bfunction\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)*\s*$/;
   for (const f of files.list()) {
     const lower = f.toLowerCase();
     if (!lower.endsWith(".lua") && !lower.endsWith(".ltp")) continue;
@@ -163,6 +181,12 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
     const ctx = contextOf(rel);
     const lines = files.lines ? files.lines(f) : fs.readFileSync(f, "utf8").split(/\r?\n/);
     let state = null;
+    // Carries "function" (or "function ns.") forward when it is the last
+    // thing seen on a line with nothing yet after it - the receiver can be
+    // on the next line. The inserted " " stands in for the real line break
+    // codeOnly doesn't preserve, so "function" and the next line's "plot"
+    // don't get concatenated into one token the way comment removal could.
+    let declTail = "";
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       // The lexer still has to see this line even when it is too long to
@@ -171,9 +195,14 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
       // looks like it's still inside that span forever.
       const stripped = codeOnly(line, state);
       state = stripped.state;
-      if (line.length > 400) continue;
+      if (line.length > 400) {
+        declTail = "";
+        continue;
+      }
+      const combined = declTail + " " + stripped.out;
+      const offset = declTail.length + 1;
       for (const m of stripped.out.matchAll(re)) {
-        if (DECLARATION_HEAD.test(stripped.out.slice(0, m.index))) continue;
+        if (DECLARATION_HEAD.test(combined.slice(0, offset + m.index))) continue;
         const method = m[3];
         let e = index.get(method);
         if (!e) index.set(method, (e = { count: 0, sites: [], contexts: new Set(), zeroArg: false, zeroArgVars: new Set() }));
@@ -188,6 +217,8 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
         const site = { v: m[1], file: rel.replace(/\\/g, "/"), line: i + 1, code: line.trim().slice(0, 200), ctx };
         if (e.sites.length < perMethod && !e.sites.some((x) => x.v === site.v && x.ctx === site.ctx)) e.sites.push(site);
       }
+      const tail = DECLARATION_HEAD.exec(combined);
+      declTail = tail ? tail[0] : "";
     }
   }
   return index;

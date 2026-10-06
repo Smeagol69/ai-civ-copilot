@@ -260,6 +260,49 @@ test("a method declaration head does not make the probe-safety gate wrongly trea
   assert.ok(!keys.includes("Plot:GetYield"), "a declaration must not make GetYield look like a safe zero-argument getter");
 });
 
+test("a declaration head is still recognized when 'function' is on the previous line", () => {
+  const files = filesWith(["function", "plot:GetYield() return 0 end"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.equal(e, undefined, "the keyword and the receiver are still one declaration head, even split across lines");
+});
+
+test("a qualified declaration head (function ns.plot:Method()) is still recognized", () => {
+  const files = filesWith(["function ns.plot:GetYield() return 0 end"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.equal(e, undefined, "the call-site regex matches starting at the qualifier's last segment; the dotted prefix is still part of the declaration head");
+});
+
+test("a declaration head is still recognized when a comment directly abuts the keyword and receiver with no separating space", () => {
+  // Removing the comment must not glue "function" onto "plot" into the
+  // single identifier "functionplot" - that would hide the declaration
+  // from the detector (and from holderPattern) in a different way.
+  const files = filesWith(["function--[[gap]]plot:GetYield() return 0 end"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.equal(e, undefined, "a comment between the keyword and the receiver does not turn the declaration into a call");
+});
+
+test("all three declaration-head gaps together still leave a real call elsewhere correctly recorded", () => {
+  const files = filesWith([
+    "function",
+    "plot:GetYield() return 0 end",
+    "function ns.plot:GetYield() return 0 end",
+    "function--[[gap]]plot:GetYield() return 0 end",
+    "local y = otherplot:GetYield(5)",
+  ]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e, "the real call is still recorded as evidence");
+  assert.equal(e.count, 1, "none of the three declaration heads count; only the real call does");
+  assert.equal(e.zeroArg, false, "the real call takes an argument");
+});
+
+test("a qualified declaration head does not make the probe-safety gate wrongly treat the function as zero-argument", () => {
+  const memory = fakeMemory();
+  const files = filesWith(["function ns.plot:GetYield() return 0 end"]);
+  dig.mapApi(memory, files, memory.discovery);
+  const keys = dig.probeCandidates(memory.discovery, { limit: 50 }).map((e) => `${e.holder}:${e.method}`);
+  assert.ok(!keys.includes("Plot:GetYield"), "a qualified declaration must not make GetYield look like a safe zero-argument getter");
+});
+
 test("dig status only moves forward, blocked is recorded, and notes accumulate", () => {
   const memory = fakeMemory();
   const dmap = memory.discovery;
