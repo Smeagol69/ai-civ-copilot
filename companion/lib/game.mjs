@@ -97,12 +97,16 @@ export function buildScript(body, params = {}) {
 // any direct caller - the CLI's --direct path, or any future one - can
 // establish them itself, instead of relying on a poll loop that only the
 // bridge runs.
+// mp/cloud start at false so a failed pcall still leaves them a boolean
+// (toLua-safe), but false-by-default looks identical to a confirmed single
+// player game unless the pcalls' own ok/fail status is reported too -
+// factsOk is how the caller tells "confirmed" apart from "could not read".
 const MP_FACTS_LUA = `
 local mp, cloud, humans = false, false, nil
-pcall(function() mp = GameConfiguration.IsNetworkMultiplayer() end)
-pcall(function() cloud = GameConfiguration.IsPlayByCloud() end)
+local mpOk = pcall(function() mp = GameConfiguration.IsNetworkMultiplayer() end)
+local cloudOk = pcall(function() cloud = GameConfiguration.IsPlayByCloud() end)
 pcall(function() humans = GameConfiguration.GetHumanPlayerCount() end)
-emitJson({ mp = mp, cloud = cloud, humans = humans })
+emitJson({ mp = mp, cloud = cloud, humans = humans, factsOk = mpOk and cloudOk })
 `;
 
 export class Game {
@@ -156,7 +160,16 @@ export class Game {
       // pause that lands while this call is queued or mutex-blocked. This
       // read must obey pause exactly like every other non-forced call.
       const { value } = await this.lua(UI_STATE, MP_FACTS_LUA, { timeoutMs: 5000 });
-      this.coreLocked = multiplayerLock(value, this.coreLocked);
+      if (value?.factsOk) {
+        this.coreLocked = multiplayerLock(value, this.coreLocked);
+      } else {
+        // The call round-tripped, but the GameConfiguration getters
+        // themselves failed (not available yet) - that is not a confirmed
+        // fact, so treat it exactly like a failed read: stay at whatever
+        // the lock already was and retry on the next call, rather than
+        // trusting mp/cloud's false-by-default placeholder values.
+        this.coreLockEstablished = false;
+      }
     } catch {
       // Could not read the facts yet (not connected, game not loaded) -
       // stay locked and retry on the next call.

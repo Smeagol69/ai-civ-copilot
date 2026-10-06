@@ -149,7 +149,7 @@ test("a direct client (establishCoreLock) starts fail-closed and stays locked un
   // this is the CLI's exact construction (see directCtx() in cli/civ.mjs).
   let otherCmds = 0;
   const fake = await startFakeTuner((ctx) => {
-    if (/GetHumanPlayerCount/.test(ctx.lua)) return ctx.emitJson({ mp: true, cloud: false, humans: 5 });
+    if (/GetHumanPlayerCount/.test(ctx.lua)) return ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true });
     otherCmds++;
     return ctx.emitJson({ ran: ctx.state });
   });
@@ -170,7 +170,7 @@ test("a direct client (establishCoreLock) starts fail-closed and stays locked un
 
 test("a direct client in an ordinary single-player game is not stuck refusing core edits forever", async () => {
   const fake = await startFakeTuner((ctx) => {
-    if (/GetHumanPlayerCount/.test(ctx.lua)) return ctx.emitJson({ mp: false, cloud: false, humans: null });
+    if (/GetHumanPlayerCount/.test(ctx.lua)) return ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true });
     return ctx.emitJson({ ran: ctx.state });
   });
   const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
@@ -190,7 +190,7 @@ test("a direct client that cannot read the facts yet stays locked and retries on
     if (/GetHumanPlayerCount/.test(ctx.lua)) {
       attempts++;
       if (attempts === 1) return ctx.runtimeError("GameConfiguration is not available yet");
-      return ctx.emitJson({ mp: false, cloud: false, humans: null });
+      return ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true });
     }
     return ctx.emitJson({ ran: ctx.state });
   });
@@ -206,12 +206,42 @@ test("a direct client that cannot read the facts yet stays locked and retries on
   }
 });
 
+test("a direct client retries when the multiplayer getters fail, rather than trusting their false-by-default placeholders", async () => {
+  // MP_FACTS_LUA inits mp/cloud to false before the pcalls run, so a failed
+  // GameConfiguration.IsNetworkMultiplayer()/IsPlayByCloud() (e.g. no game
+  // loaded yet) looks byte-for-byte identical to a confirmed single-player
+  // read unless factsOk says otherwise - without it, this would unlock a
+  // real multiplayer game on the strength of a read that never happened.
+  let attempts = 0;
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      attempts++;
+      if (attempts === 1) return ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: false });
+      return ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true });
+    }
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked",
+      "a failed-getter read must not be trusted as confirmed single player");
+    assert.equal(game.coreLocked, UNKNOWN_LOCK, "still unestablished - nothing reliable was learned");
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked",
+      "the retried read is reliable and says real multiplayer");
+    assert.equal(game.coreLocked, MP_LOCK);
+    assert.equal(attempts, 2, "the unreliable read did not count as 'established' - it was retried");
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
 test("a direct client does not send any CMD for its lazy fact-finding while paused", async () => {
   // paused means "the game is loading, leaving or between sessions: no
   // calls at all" (a call into a half-torn-down game can crash it - the
   // 2026-10-04 incident). The implicit bootstrap must not be exempt.
   let cmds = 0;
-  const fake = await startFakeTuner((ctx) => { cmds++; return ctx.emitJson({ mp: true, cloud: false, humans: 5 }); });
+  const fake = await startFakeTuner((ctx) => { cmds++; return ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true }); });
   const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
   try {
     game.paused = "the game is loading or between sessions";
@@ -221,6 +251,7 @@ test("a direct client does not send any CMD for its lazy fact-finding while paus
     game.paused = null;
     await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked", "once unpaused, the facts are read and this game is multiplayer");
     assert.equal(cmds, 1, "fact-finding ran exactly once, only after pause lifted");
+    assert.equal(game.coreLocked, MP_LOCK);
   } finally {
     game.tuner.close();
     await fake.close();
@@ -441,7 +472,7 @@ test("a direct client's implicit bootstrap obeys a pause that lands while it is 
       firstStarted();
       await held;
     }
-    ctx.emitJson({ mp: true, cloud: false, humans: 5 });
+    ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true });
   });
   const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
   try {
@@ -481,7 +512,7 @@ test("a direct client's implicit bootstrap obeys a pause that lands while it wai
     },
     async release() { releases++; },
   };
-  const fake = await startFakeTuner((ctx) => ctx.emitJson({ mp: true, cloud: false, humans: 5 }));
+  const fake = await startFakeTuner((ctx) => ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true }));
   const { TunerClient } = await import("../lib/tuner.mjs");
   const game = new Game({ tuner: new TunerClient({ port: fake.port, lock }), trace: false, establishCoreLock: true });
   try {
