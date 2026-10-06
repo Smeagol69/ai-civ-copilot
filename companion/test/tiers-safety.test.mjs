@@ -8,6 +8,7 @@ import path from "node:path";
 import { ask, tierFor, toolsFor, systemPrompt, TIERS, ADVISOR_MODEL, DIG_MODEL, DIG_ONLY_TOOLS, refusedParam, explainApiError, AiUnavailable } from "../lib/agent.mjs";
 import { Memory } from "../lib/memory.mjs";
 import { Game, CORE_STATE, UI_STATE } from "../lib/game.mjs";
+import { UNKNOWN_LOCK, MP_LOCK } from "../lib/locks.mjs";
 import { startFakeTuner } from "./fixtures/fake-tuner.mjs";
 import { SNAP } from "./fixtures/snapshot.mjs";
 
@@ -120,6 +121,85 @@ test("multiplayer with other people: the model is told, and the game core is loc
     await assert.rejects(game.lua(UI_STATE, "emitJson(1)"), (e) => e.code === "paused");
     await assert.rejects(game.script("standing"), (e) => e.code === "paused");
     assert.equal((await game.lua(UI_STATE, "emitJson(1)", { force: true })).value.ran, "InGame", "the poll can still run");
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
+test("a Game that does not opt into establishCoreLock starts exactly as before - unlocked, no extra calls", async () => {
+  // Every existing caller (the bridge, every other test) constructs Game
+  // this way and must see zero behavior change.
+  let cmds = 0;
+  const fake = await startFakeTuner((ctx) => { cmds++; return ctx.emitJson({ ran: ctx.state }); });
+  const game = new Game({ port: fake.port, trace: false });
+  try {
+    assert.equal(game.coreLocked, undefined);
+    assert.equal((await game.lua(CORE_STATE, "emitJson(1)")).value.ran, "GameCore_Tuner");
+    assert.equal(cmds, 1, "no hidden fact-finding call was made");
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
+test("a direct client (establishCoreLock) starts fail-closed and stays locked until it reads real multiplayer facts", async () => {
+  // Unlike the bridge, cli/civ.mjs's --direct path never runs a poll, so it
+  // must establish the facts itself before its first core-editing call -
+  // this is the CLI's exact construction (see directCtx() in cli/civ.mjs).
+  let otherCmds = 0;
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) return ctx.emitJson({ mp: true, cloud: false, humans: 5 });
+    otherCmds++;
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    assert.equal(game.coreLocked, UNKNOWN_LOCK, "fail closed before the facts are known");
+    assert.equal((await game.lua(UI_STATE, "emitJson(1)")).value.ran, "InGame", "a UI read never needs the facts - CORE_LOCK_ALLOWED already covers it");
+    assert.equal(game.coreLocked, UNKNOWN_LOCK, "a UI-only call does not trigger fact-finding");
+    assert.equal(otherCmds, 1, "the UI read reached the game normally");
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked");
+    assert.equal(otherCmds, 1, "the real facts said multiplayer with others - the core-editing write never reached the game");
+    assert.equal(game.coreLocked, MP_LOCK);
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
+test("a direct client in an ordinary single-player game is not stuck refusing core edits forever", async () => {
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) return ctx.emitJson({ mp: false, cloud: false, humans: null });
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    assert.equal(game.coreLocked, UNKNOWN_LOCK);
+    assert.equal((await game.lua(CORE_STATE, "emitJson(1)")).value.ran, "GameCore_Tuner", "single player, once its facts are known, is never locked");
+    assert.equal(game.coreLocked, null);
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
+test("a direct client that cannot read the facts yet stays locked and retries on the next call", async () => {
+  let attempts = 0;
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      attempts++;
+      if (attempts === 1) return ctx.runtimeError("GameConfiguration is not available yet");
+      return ctx.emitJson({ mp: false, cloud: false, humans: null });
+    }
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked", "the first attempt could not read the facts - stays locked");
+    assert.equal(game.coreLocked, UNKNOWN_LOCK);
+    assert.equal((await game.lua(CORE_STATE, "emitJson(1)")).value.ran, "GameCore_Tuner", "the next call retries and succeeds once the facts are readable");
+    assert.equal(attempts, 2);
   } finally {
     game.tuner.close();
     await fake.close();

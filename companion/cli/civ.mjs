@@ -60,7 +60,10 @@ async function bridgeRunning() {
 }
 
 async function directCtx() {
-  const game = new Game({ host: process.env.CIV6_TUNER_HOST, port: Number(process.env.CIV6_TUNER_PORT || 4318) });
+  // No bridge, no poll: the game would otherwise never learn whether this
+  // is a multiplayer game with other people before a core-editing call,
+  // unlike the bridge (which sets and refreshes this itself every poll).
+  const game = new Game({ host: process.env.CIV6_TUNER_HOST, port: Number(process.env.CIV6_TUNER_PORT || 4318), establishCoreLock: true });
   const memory = new Memory();
   let snap = null;
   return {

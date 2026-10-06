@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TunerClient, LuaError } from "./tuner.mjs";
 import { inflightTracer } from "./inflight.mjs";
+import { UNKNOWN_LOCK, multiplayerLock } from "./locks.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const LUA_DIR = path.join(HERE, "..", "lua");
@@ -92,12 +93,33 @@ export function buildScript(body, params = {}) {
   return `${loadLua("prelude")}\nlocal P = ${toLua(params)}\n${body}`;
 }
 
+// Read just the multiplayer facts (same fields server.mjs's poll reads) so
+// any direct caller - the CLI's --direct path, or any future one - can
+// establish them itself, instead of relying on a poll loop that only the
+// bridge runs.
+const MP_FACTS_LUA = `
+local mp, cloud, humans = false, false, nil
+pcall(function() mp = GameConfiguration.IsNetworkMultiplayer() end)
+pcall(function() cloud = GameConfiguration.IsPlayByCloud() end)
+pcall(function() humans = GameConfiguration.GetHumanPlayerCount() end)
+emitJson({ mp = mp, cloud = cloud, humans = humans })
+`;
+
 export class Game {
   // trace: false disables the in-flight log (tests do, via NODE_TEST_CONTEXT).
-  constructor({ tuner, host, port, log = () => {}, trace } = {}) {
+  // establishCoreLock: for a caller that never runs the bridge's poll (the
+  // CLI's --direct path) - starts coreLocked fail-closed instead of unset,
+  // and establishes the real facts itself before its first core-editing
+  // call. The bridge already sets and refreshes coreLocked itself via its
+  // poll, so it (and every test constructing its own Game) is unaffected by
+  // leaving this at its default of false.
+  constructor({ tuner, host, port, log = () => {}, trace, establishCoreLock = false } = {}) {
     const tracer = trace === false || (trace === undefined && process.env.NODE_TEST_CONTEXT) ? undefined : trace || inflightTracer();
     this.tuner = tuner || new TunerClient({ host, port, log, trace: tracer });
     this.log = log;
+    this.autoEstablishCoreLock = establishCoreLock;
+    if (establishCoreLock) this.coreLocked = UNKNOWN_LOCK;
+    this.coreLockEstablished = false;
   }
 
   get connected() {
@@ -117,9 +139,29 @@ export class Game {
     if (this.coreLocked && !CORE_LOCK_ALLOWED.has(state)) throw new LuaError(this.coreLocked, { state, code: "core-locked" });
   }
 
+  // A caller that never polls (the CLI's --direct path) would otherwise
+  // stay at the safe-by-default UNKNOWN_LOCK forever, refusing every
+  // core-editing call even in an ordinary single-player game. Establish the
+  // real facts once, lazily, the first time a non-forced call actually
+  // needs them - a UI/panel call never needs this, since CORE_LOCK_ALLOWED
+  // already lets it through regardless of coreLocked.
+  async #ensureCoreLockEstablished() {
+    if (this.coreLockEstablished) return;
+    this.coreLockEstablished = true;
+    try {
+      const { value } = await this.lua(UI_STATE, MP_FACTS_LUA, { force: true, timeoutMs: 5000 });
+      this.coreLocked = multiplayerLock(value, this.coreLocked);
+    } catch {
+      // Could not read the facts yet (not connected, game not loaded) -
+      // stay locked and retry on the next call.
+      this.coreLockEstablished = false;
+    }
+  }
+
   // The one way into the game: Game.lua, Game.script and typed actions all
   // come through here, so the locks above cover every call.
   async exec(state, body, { params = {}, timeoutMs, label, force } = {}) {
+    if (this.autoEstablishCoreLock && !force && !CORE_LOCK_ALLOWED.has(state)) await this.#ensureCoreLockEstablished();
     this.#guard(state, force);
     await this.ensureConnected();
     // Connection, earlier calls and the machine-wide mutex can all delay a
