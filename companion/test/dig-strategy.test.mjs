@@ -67,6 +67,54 @@ test("only zero-argument getters with same-object zero-argument evidence are pro
   assert.ok(keys.includes("Player:GetTreasury:GetGoldBalance"), "pTreasury:GetGoldBalance() is zero-argument evidence on a treasury");
 });
 
+// A single shipped script with exactly the given lines, for testing
+// indexCallSites' per-line regex directly without the shared fakeFiles()
+// fixture (which several other tests assert an exact method count against).
+function filesWith(lines) {
+  const dir = tmp();
+  const sub = path.join("Base", "Assets", "UI");
+  fs.mkdirSync(path.join(dir, sub), { recursive: true });
+  const file = path.join(dir, sub, "Script.lua");
+  fs.writeFileSync(file, lines.join("\n"));
+  return { gameDir: dir, list: () => [file], lines: (f) => fs.readFileSync(f, "utf8").split("\n") };
+}
+
+test("a multiline call with its argument on a later line is not inferred as zero-argument", () => {
+  // The regex matches per line; a call whose "(" opens at end of line has
+  // nothing after it on that line, so the captured argument text is empty
+  // even though the real call takes YieldTypes.YIELD_FOOD on the next line.
+  const files = filesWith(["local y = plot:GetYield(", "    YieldTypes.YIELD_FOOD", ")"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e, "the call is still recorded as evidence");
+  assert.equal(e.zeroArg, false, "a multiline call with an argument must not be inferred as zero-argument");
+});
+
+test("an incomplete call at end of file is not inferred as zero-argument either", () => {
+  const files = filesWith(["local y = plot:GetYield("]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e, "the call is still recorded as evidence");
+  assert.equal(e.zeroArg, false, "a truncated call must not be inferred as zero-argument");
+});
+
+test("a genuine same-line zero-argument call is still correctly inferred", () => {
+  const files = filesWith(["local n = pCity:GetPopulation()"]);
+  const e = dig.indexCallSites(files).get("GetPopulation");
+  assert.ok(e.zeroArg, "a real zero-argument call on one line is still detected");
+  assert.ok(e.zeroArgVars.has("pCity"));
+});
+
+test("a multiline call does not make the probe-safety gate wrongly treat the function as zero-argument", () => {
+  // This is the actual safety consequence: probeBatch only calls a getter
+  // live with zero arguments when the shipped usage looks zero-argument.
+  // A wrongly-inferred one would call a function that needs an argument
+  // with none - exactly what the crash-safe gate exists to prevent.
+  const memory = fakeMemory();
+  const files = filesWith(["local y = plot:GetYield(", "    YieldTypes.YIELD_FOOD", ")"]);
+  dig.mapApi(memory, files, memory.discovery);
+  const keys = dig.probeCandidates(memory.discovery, { limit: 50 }).map((e) => `${e.holder}:${e.method}`);
+  assert.ok(!keys.includes("Plot:GetYield"), "a multiline call must not make GetYield look like a safe zero-argument getter");
+});
+
 test("dig status only moves forward, blocked is recorded, and notes accumulate", () => {
   const memory = fakeMemory();
   const dmap = memory.discovery;

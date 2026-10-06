@@ -45,7 +45,12 @@ function contextOf(rel) {
 // One pass over every shipped .lua/.ltp line: method name -> call sites.
 export function indexCallSites(files, { perMethod = 24 } = {}) {
   const index = new Map();
-  const re = /([A-Za-z_][A-Za-z0-9_]*)\s*([:.])\s*([A-Z][A-Za-z0-9_]*)\s*\(([^()]*)\)?/g;
+  // The closing paren is its own group and is never assumed - matching is
+  // line by line, so a call whose "(" opens at end of line (the real
+  // argument is on the next line, or the file is simply truncated there)
+  // would otherwise look identical to a confirmed same-line zero-argument
+  // call. The zero-arg inference below requires that group to be present.
+  const re = /([A-Za-z_][A-Za-z0-9_]*)\s*([:.])\s*([A-Z][A-Za-z0-9_]*)\s*\(([^()]*)(\))?/g;
   for (const f of files.list()) {
     const lower = f.toLowerCase();
     if (!lower.endsWith(".lua") && !lower.endsWith(".ltp")) continue;
@@ -61,7 +66,7 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
         if (!e) index.set(method, (e = { count: 0, sites: [], contexts: new Set(), zeroArg: false, zeroArgVars: new Set() }));
         e.count++;
         e.contexts.add(ctx);
-        if (m[2] === ":" && m[4] !== undefined && m[4].trim() === "") {
+        if (m[2] === ":" && m[5] !== undefined && m[4] !== undefined && m[4].trim() === "") {
           e.zeroArg = true;
           if (e.zeroArgVars.size < 40) e.zeroArgVars.add(m[1]);
         }
