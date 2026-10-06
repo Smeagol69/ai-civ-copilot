@@ -201,8 +201,10 @@ async function runActionLua(game, state, P) {
 }
 
 // A lost connection or a call with an unknown outcome means the game may be
-// gone or still busy: never pile more calls on it.
-const isTransportError = (err) => !!err && (err.code === "lost" || err.code === "timeout" || err.code === "wrong-state" || /not connected|no Civ VI tuner/.test(err.message));
+// gone or still busy: never pile more calls on it. Exported so other callers
+// (tools.mjs) can tell "definitely did not reach the game" apart from "may
+// have run there before the error surfaced".
+export const isTransportError = (err) => !!err && (err.code === "lost" || err.code === "timeout" || err.code === "wrong-state" || /not connected|no Civ VI tuner/.test(err.message));
 
 // Execute one action and return the game's own account of what happened.
 // Requests are asynchronous; read back a few times before calling it failed.

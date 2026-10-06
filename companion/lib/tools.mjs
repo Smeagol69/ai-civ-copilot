@@ -8,7 +8,7 @@
 //             scripts), save working Lua as a new named ability, record
 //             verified facts. Saved abilities come back as tools.
 
-import { ACTIONS, performAction, validateAction } from "./actions.mjs";
+import { ACTIONS, performAction, validateAction, isTransportError } from "./actions.mjs";
 import { UI_STATE, CORE_STATE } from "./game.mjs";
 import * as solve from "./solvers.mjs";
 import * as dig from "./discovery.mjs";
@@ -17,6 +17,16 @@ import { planTurn } from "./planner.mjs";
 
 const MAX_RESULT_CHARS = 60000;
 const SECTIONS = ["meta", "me", "techs", "civics", "cities", "units", "players", "visibleForeignUnits", "resources", "exploration", "gaps"];
+
+// isTransportError (lost/timeout/wrong-state) covers calls whose CMD may have
+// reached the game but whose reply did not - actions.mjs also uses it to
+// decide when to stop retrying a read-back, so it is not broadened here. A
+// Lua runtime error ("runtime") is different: the wrapper runs the caller's
+// body inside pcall(), so a runtime error means every statement before the
+// one that failed already ran for real - unlike a compile error or a guard
+// refusal (paused, core-locked, not-found), none of which ever reach the
+// game. This is only about whether the snapshot cache can still be trusted.
+const mayHaveMutatedGame = (err) => isTransportError(err) || err?.code === "runtime";
 
 const obj = (properties = {}, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 const S = (description) => ({ type: "string", description });
@@ -303,6 +313,10 @@ export async function dispatchTool(ctx, name, input = {}) {
         return { ok: true, value, output: text };
       } catch (err) {
         memory.record({ type: "lua", state: input.state, code: input.code.slice(0, 4000), ok: false, error: err.message });
+        // The code may have partially or fully run before this error
+        // surfaced (a transport error after send, or a runtime error partway
+        // through the body) - the cached snapshot can no longer be trusted.
+        if (mayHaveMutatedGame(err)) ctx.markStale();
         return { ok: false, error: err.message, kind: err.code };
       }
     }
@@ -342,10 +356,16 @@ export async function dispatchTool(ctx, name, input = {}) {
       if (input.test_params) {
         try {
           const { value, text } = await game.lua(input.state, input.lua, { params: input.test_params });
+          // The call completed without throwing, so its body ran in full -
+          // mark stale before the possible early return below, not after it,
+          // so a write that only reports ok=false still invalidates the cache.
+          if (input.kind && input.kind !== "query") ctx.markStale();
           if (value && value.ok === false) return { saved: false, reason: "test run reported ok=false", result: value };
           tested = { at: new Date().toISOString(), params: input.test_params, result: clip({ value, text }).slice(0, 1500) };
-          if (input.kind && input.kind !== "query") ctx.markStale();
         } catch (err) {
+          // The test run's Lua may have partially or fully run before this
+          // error surfaced (see mayHaveMutatedGame).
+          if (input.kind && input.kind !== "query" && mayHaveMutatedGame(err)) ctx.markStale();
           return { saved: false, reason: `test run failed: ${err.message}` };
         }
       }
@@ -422,6 +442,9 @@ export async function dispatchTool(ctx, name, input = {}) {
           return { ok, value, output: text };
         } catch (err) {
           memory.markAbilityUsed(a.name, false);
+          // Same risk as run_lua: the ability's Lua may have partially or
+          // fully run in the game before this error surfaced.
+          if (a.kind !== "query" && mayHaveMutatedGame(err)) ctx.markStale();
           return { ok: false, error: err.message };
         }
       }
