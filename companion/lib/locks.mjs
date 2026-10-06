@@ -17,22 +17,24 @@ export const UNKNOWN_LOCK = "The copilot has not yet seen what kind of game this
 // though some such values happen to coerce "safely" by accident; the type
 // itself is the only reliable signal that the read produced what it
 // claims to. A missing factsOk (every caller before that field existed)
-// is treated as reliable, so this stays backward compatible with callers
-// that only ever passed well-typed booleans. Both multiplayerLock and
-// game.mjs's #ensureCoreLockEstablished need this same judgment call, so
-// it lives here once.
+// is deliberately excused, so this stays backward compatible with callers
+// that only ever passed well-typed booleans - but that is not the same as
+// a *present but malformed* marker (null, 0, a stray string): only an
+// explicit true, or no marker at all, counts as reliable. Both
+// multiplayerLock and game.mjs's #ensureCoreLockEstablished need this same
+// judgment call, so it lives here once.
 export function hasReliableFacts(poll) {
-  return !!poll && poll.factsOk !== false && typeof poll.mp === "boolean" && typeof poll.cloud === "boolean";
+  return !!poll && (poll.factsOk === undefined || poll.factsOk === true) && typeof poll.mp === "boolean" && typeof poll.cloud === "boolean";
 }
 
 // Stricter than hasReliableFacts: requires factsOk to be the explicit
-// boolean true, not just "not false". hasReliableFacts's leniency toward a
-// missing factsOk exists for backward compatibility with callers (and
-// tests) that predate the field - game.mjs's own direct reads always
-// explicitly set factsOk one way or the other, so there is no legacy-caller
-// case there, and an explicit marker that is anything other than true
-// (omitted, null, 0, or any other non-true value reaching this point) must
-// not count as a confirmed read worth marking "established" on.
+// boolean true - an omitted marker does not count here either.
+// hasReliableFacts's leniency toward a missing factsOk exists for backward
+// compatibility with callers (and tests) that predate the field - game.
+// mjs's own direct reads always explicitly set factsOk one way or the
+// other, so there is no legacy-caller case there, and anything other than
+// an explicit true (omitted, null, 0, or any other value reaching this
+// point) must not count as a confirmed read worth marking "established" on.
 export function isConfirmedFacts(poll) {
   return poll?.factsOk === true && typeof poll.mp === "boolean" && typeof poll.cloud === "boolean";
 }

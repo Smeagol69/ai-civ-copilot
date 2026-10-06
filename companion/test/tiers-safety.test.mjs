@@ -784,6 +784,26 @@ test("multiplayer lock: network or Play By Cloud with other people locks; single
     "a blank-string human count must not read as a confirmed zero");
   assert.equal(multiplayerLock({ mp: true, cloud: false, humans: false, factsOk: true }, null), MP_LOCK,
     "a boolean human count must not read as a confirmed zero either");
+  // hasReliableFacts' factsOk !== false was meant to excuse only a
+  // deliberately *absent* marker (legacy callers that predate the field),
+  // not a *present but malformed* one - those two are not the same thing.
+  // game.mjs's own direct reads are already protected by the stricter
+  // isConfirmedFacts gate (round 15), so multiplayerLock is never even
+  // called there for a malformed marker - but server.mjs's applyMultiplayer
+  // calls multiplayerLock directly with no such gate, so this helper must
+  // reject a malformed-present marker itself, the same way it already
+  // rejects an explicit false.
+  assert.equal(multiplayerLock({ mp: false, cloud: false, humans: 5, factsOk: null }, MP_LOCK), MP_LOCK,
+    "a null factsOk marker must not clear an existing multiplayer lock");
+  assert.equal(multiplayerLock({ mp: false, cloud: false, humans: 5, factsOk: 0 }, MP_LOCK), MP_LOCK,
+    "a numeric-zero factsOk marker must not clear an existing multiplayer lock either");
+  assert.equal(multiplayerLock({ mp: false, cloud: false, humans: 5, factsOk: "false" }, MP_LOCK), MP_LOCK,
+    "a string factsOk marker must not clear an existing multiplayer lock either");
+  assert.equal(multiplayerLock({ mp: false, cloud: false, humans: 5, factsOk: null }, null), UNKNOWN_LOCK,
+    "a null factsOk marker after a confirmed single-player session must not stay unlocked");
+  // The deliberately-absent case must still work exactly as before.
+  assert.equal(multiplayerLock({ mp: true, cloud: false, humans: 5 }, UNKNOWN_LOCK), MP_LOCK,
+    "an omitted factsOk marker (every caller before the field existed) is still treated as reliable");
 });
 
 test("a lock applied while a call is queued prevents its command from reaching the game", async () => {
