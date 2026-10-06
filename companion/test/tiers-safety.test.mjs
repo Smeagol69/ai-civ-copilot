@@ -555,6 +555,41 @@ test("a direct client retries when the read reports factsOk but mp is missing or
   }
 });
 
+test("a direct client retries when factsOk is omitted, null or 0, rather than treating an unconfirmed read as established", async () => {
+  // hasReliableFacts's factsOk !== false is deliberately lenient, for
+  // multiplayerLock's own backward compatibility with callers that predate
+  // the field entirely. But game.mjs's own direct reads always explicitly
+  // set factsOk one way or the other - there is no "legacy caller" case
+  // here, so anything other than an explicit true must not count as a
+  // confirmed read worth marking "established" on, even with well-typed
+  // mp/cloud booleans.
+  let attempts = 0;
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      attempts++;
+      if (attempts === 1) return ctx.emitJson({ mp: false, cloud: false, humans: null }); // factsOk omitted
+      if (attempts === 2) return ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: null });
+      if (attempts === 3) return ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: 0 });
+      return ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true });
+    }
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    for (const why of ["factsOk omitted", "factsOk null", "factsOk 0"]) {
+      await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked", why);
+      assert.equal(game.coreLocked, UNKNOWN_LOCK, `${why}: still unestablished`);
+    }
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked",
+      "the fourth, explicitly-confirmed read is reliable and says real multiplayer");
+    assert.equal(game.coreLocked, MP_LOCK);
+    assert.equal(attempts, 4, "none of the three unconfirmed reads counted as established");
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
 test("a direct client does not send any CMD for its lazy fact-finding while paused", async () => {
   // paused means "the game is loading, leaving or between sessions: no
   // calls at all" (a call into a half-torn-down game can crash it - the
@@ -734,6 +769,21 @@ test("multiplayer lock: network or Play By Cloud with other people locks; single
   // through Number()'s NaN into "nobody else is here".
   assert.equal(multiplayerLock({ mp: true, cloud: false, humans: "unknown", factsOk: true }, null), MP_LOCK,
     "an unparseable human count must still assume others are there");
+  // mp missing entirely (as opposed to present-but-wrong-typed, covered
+  // above) must get the exact same current||UNKNOWN_LOCK treatment, not
+  // the bare "keep current" fallback - a poll this incomplete after a
+  // confirmed single-player session is just as unverified as one with a
+  // malformed type.
+  assert.equal(multiplayerLock({ cloud: false, humans: 5, factsOk: true }, null), UNKNOWN_LOCK,
+    "a missing mp after a confirmed single-player session must not stay unlocked");
+  // Number(poll.humans) coerces a blank string or a boolean to a finite
+  // 0, which would read as a confirmed "alone" headcount instead of
+  // "unparseable, assume others" - the type must be checked directly, not
+  // inferred from whatever Number() happens to produce.
+  assert.equal(multiplayerLock({ mp: true, cloud: false, humans: "", factsOk: true }, null), MP_LOCK,
+    "a blank-string human count must not read as a confirmed zero");
+  assert.equal(multiplayerLock({ mp: true, cloud: false, humans: false, factsOk: true }, null), MP_LOCK,
+    "a boolean human count must not read as a confirmed zero either");
 });
 
 test("a lock applied while a call is queued prevents its command from reaching the game", async () => {

@@ -25,13 +25,27 @@ export function hasReliableFacts(poll) {
   return !!poll && poll.factsOk !== false && typeof poll.mp === "boolean" && typeof poll.cloud === "boolean";
 }
 
+// Stricter than hasReliableFacts: requires factsOk to be the explicit
+// boolean true, not just "not false". hasReliableFacts's leniency toward a
+// missing factsOk exists for backward compatibility with callers (and
+// tests) that predate the field - game.mjs's own direct reads always
+// explicitly set factsOk one way or the other, so there is no legacy-caller
+// case there, and an explicit marker that is anything other than true
+// (omitted, null, 0, or any other non-true value reaching this point) must
+// not count as a confirmed read worth marking "established" on.
+export function isConfirmedFacts(poll) {
+  return poll?.factsOk === true && typeof poll.mp === "boolean" && typeof poll.cloud === "boolean";
+}
+
 // poll: { mp, cloud, humans, factsOk } read in the game (GameConfiguration).
-// Returns the lock text, or null when edits are allowed. A poll without the
-// facts keeps the current lock - and so does one that is not reliable
-// (hasReliableFacts): both server.mjs's POLL_LUA and game.mjs's
-// MP_FACTS_LUA default mp/cloud to false and would otherwise look identical
-// to a confirmed single-player read, which could unlock (or un-stick an
-// already-locked) multiplayer game on a read that never actually happened.
+// Returns the lock text, or null when edits are allowed. A poll without
+// reliable facts (hasReliableFacts - covers a poll missing entirely, one
+// missing mp, or one whose mp/cloud are not real booleans) keeps the
+// current lock, falling back to UNKNOWN_LOCK rather than null: both
+// server.mjs's POLL_LUA and game.mjs's MP_FACTS_LUA default mp/cloud to
+// false and would otherwise look identical to a confirmed single-player
+// read, which could unlock (or un-stick an already-locked) multiplayer
+// game on a read that never actually happened.
 //
 // "Keep the current lock" is only safe when current is already
 // restrictive. If current is null - a *previous* reliable read confirmed
@@ -41,15 +55,16 @@ export function hasReliableFacts(poll) {
 // unverified. current || UNKNOWN_LOCK keeps any existing restrictive lock
 // exactly as before and only changes the null case.
 export function multiplayerLock(poll, current) {
-  if (!poll || poll.mp === undefined) return current;
   if (!hasReliableFacts(poll)) return current || UNKNOWN_LOCK;
-  // Not networked: one machine, nothing to desync. Networked with an unknown
-  // or unparseable head-count: assume other people are there, the same
-  // conservative default as the documented undefined/null case.
+  // Not networked: one machine, nothing to desync. Networked with an
+  // unknown or unparseable head-count: assume other people are there, the
+  // same conservative default as the documented undefined/null case.
+  // typeof must be checked directly - Number("") and Number(false) are
+  // both the finite number 0, which would otherwise read as a confirmed
+  // "alone" headcount instead of "not actually a count".
   const shared = poll.mp || poll.cloud;
-  const humansCount = Number(poll.humans);
-  const unknownHumans = poll.humans === undefined || poll.humans === null || !Number.isFinite(humansCount);
-  const others = shared && (unknownHumans || humansCount > 1);
+  const unknownHumans = poll.humans === undefined || poll.humans === null || typeof poll.humans !== "number" || !Number.isFinite(poll.humans);
+  const others = shared && (unknownHumans || poll.humans > 1);
   if (!others) return null;
   return poll.cloud ? CLOUD_LOCK : MP_LOCK;
 }
