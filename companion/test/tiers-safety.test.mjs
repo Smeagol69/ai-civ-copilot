@@ -184,6 +184,38 @@ test("a direct client in an ordinary single-player game is not stuck refusing co
   }
 });
 
+test("a direct client re-establishes the facts after a lost connection reconnects to a different session", async () => {
+  // coreLockEstablished must not outlive the connection it was learned on -
+  // a dropped socket may reconnect to an entirely different game (closed
+  // and reopened, or a different save), and the old session's facts say
+  // nothing about the new one.
+  let phase = "sp";
+  const fake = await startFakeTuner((ctx) => {
+    if (/GetHumanPlayerCount/.test(ctx.lua)) {
+      return phase === "sp"
+        ? ctx.emitJson({ mp: false, cloud: false, humans: null, factsOk: true })
+        : ctx.emitJson({ mp: true, cloud: false, humans: 5, factsOk: true });
+    }
+    return ctx.emitJson({ ran: ctx.state });
+  });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    assert.equal((await game.lua(CORE_STATE, "emitJson(1)")).value.ran, "GameCore_Tuner", "the first session is single player");
+    assert.equal(game.coreLocked, null);
+
+    const closed = new Promise((resolve) => game.tuner.once("close", resolve));
+    fake.dropAll();
+    await closed;
+    phase = "mp";
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked",
+      "a reconnect must not reuse the previous session's facts - the new session is multiplayer");
+    assert.equal(game.coreLocked, MP_LOCK);
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
 test("a direct client that cannot read the facts yet stays locked and retries on the next call", async () => {
   let attempts = 0;
   const fake = await startFakeTuner((ctx) => {

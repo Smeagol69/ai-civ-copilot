@@ -122,7 +122,21 @@ export class Game {
     this.tuner = tuner || new TunerClient({ host, port, log, trace: tracer });
     this.log = log;
     this.autoEstablishCoreLock = establishCoreLock;
-    if (establishCoreLock) this.coreLocked = UNKNOWN_LOCK;
+    if (establishCoreLock) {
+      this.coreLocked = UNKNOWN_LOCK;
+      // The tuner emits "close" only on a genuine, unexpected loss of an
+      // already-open connection (never during the normal port-scan/
+      // handshake sequence - see TunerClient#detach, which nulls its own
+      // socket reference before destroying it, so its own cleanup never
+      // self-triggers this). A reconnect after that may land on an
+      // entirely different session (the game closed and reopened, or a
+      // different save loaded) - the facts already established say
+      // nothing about it, so they must be re-verified, not reused.
+      this.tuner.on("close", () => {
+        this.coreLocked = UNKNOWN_LOCK;
+        this.coreLockEstablished = false;
+      });
+    }
     this.coreLockEstablished = false;
   }
 
