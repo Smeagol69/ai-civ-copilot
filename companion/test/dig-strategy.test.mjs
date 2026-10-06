@@ -154,6 +154,43 @@ test("inert text does not make the probe-safety gate wrongly treat the function 
   assert.ok(!keys.includes("Plot:GetYield"), "a trailing comment must not make GetYield look like a safe zero-argument getter");
 });
 
+test("a --[=[ ]=] long comment is not confused with a plain --[[ ]] one, even when it contains comment-shaped text", () => {
+  // Only --[[ ]] (level 0) was recognized before. A --[=[ ]=] (level 1)
+  // comment was instead treated as an ordinary single-line "--" comment
+  // that ends at end of line, so the real content on the next line was
+  // scanned as code - including the nested "--[[ text ]]", which the
+  // level-0 handling then stripped on its own, leaving "plot:GetYield( )"
+  // behind: inert text manufacturing a fake zero-argument call.
+  const files = filesWith(["local y = plot:GetYield(0)", "--[=[", "plot:GetYield(--[[ text ]] )", "]=]"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e, "the one real call is still recorded as evidence");
+  assert.equal(e.count, 1, "only the real call on line 1 is evidence; nothing from inside the --[=[ ]=] comment");
+  assert.equal(e.zeroArg, false, "the real call takes an argument; the comment's inert text must not override that");
+});
+
+test("a [=[ ]=] long string literal containing comment-shaped text is not mistaken for a real call", () => {
+  const files = filesWith(["local s = [=[plot:GetYield(--[[ text ]] )]=]"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.equal(e, undefined, "the entire line is a string literal; there is no real call anywhere in it");
+});
+
+test("a block comment that closes on a line longer than 400 characters still closes", () => {
+  // indexCallSites skips long lines entirely rather than scanning them for
+  // call evidence, but it must still run them through the lexer so a
+  // genuine close on that line is not lost - otherwise every real call
+  // after it is wrongly treated as still being inside the comment forever.
+  const files = filesWith(["--[[", "x".repeat(401) + "]]", "local y = plot:GetYield()"]);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.ok(e, "the real call after the comment closes is recorded");
+  assert.ok(e.zeroArg, "it is a genuine zero-argument call once the comment correctly closes");
+});
+
+test("a short string continued across lines with a backslash does not leak its content as a real call", () => {
+  const files = filesWith(['local s = "abc\\', 'plot:GetYield() -- still inside the string from line 1"']);
+  const e = dig.indexCallSites(files).get("GetYield");
+  assert.equal(e, undefined, "line 2 is still inside the string opened on line 1; nothing there is real code");
+});
+
 test("dig status only moves forward, blocked is recorded, and notes accumulate", () => {
   const memory = fakeMemory();
   const dmap = memory.discovery;

@@ -42,33 +42,54 @@ function contextOf(rel) {
   return "ui";
 }
 
+// Lua's long-bracket syntax ([[ ]], [=[ ]=], [==[ ]==], ...) opens at any
+// level; the closer must repeat the exact same count of "=" signs, so a
+// shorter or longer marker nested inside (e.g. a --[[ ]] inside a --[=[ ]=])
+// is never mistaken for the real close. Returns null if line[i] is not a
+// long-bracket opener.
+function longBracketOpen(line, i) {
+  if (line[i] !== "[") return null;
+  let j = i + 1;
+  let level = 0;
+  while (line[j] === "=") {
+    level++;
+    j++;
+  }
+  if (line[j] !== "[") return null;
+  return { closer: "]" + "=".repeat(level) + "]", end: j + 1 };
+}
+
 // Strip Lua comments and string-literal contents before matching, so a
 // trailing comment that happens to mention a call ("-- plot:GetYield()"),
-// a quoted string containing call-shaped text, or a --[[ ... ]] block
-// comment are never mistaken for executed code. inBlockComment carries
-// --[[ ... ]] state across lines, since a block comment can span many of
-// them. A string literal's content is replaced with a placeholder rather
-// than removed outright - removing it would collapse a call whose only
+// a quoted or long-bracket string containing call-shaped text, or a
+// --[[ ]] / --[=[ ]=] block comment of any level are never mistaken for
+// executed code. state carries whatever span is still open (a block
+// comment, a long-bracket string, or a short string continued past its
+// line with a backslash) across lines, since any of them can span many.
+// A string literal's content is replaced with a placeholder rather than
+// removed outright - removing it would collapse a call whose only
 // argument is a string literal, e.g. Lookup("LOC_X"), into looking like
 // a zero-argument call.
-function codeOnly(line, inBlockComment) {
+function codeOnly(line, state) {
   let out = "";
   let i = 0;
-  let blockComment = inBlockComment;
+  let { mode = null, closer = null } = state || {};
   const n = line.length;
   while (i < n) {
-    if (blockComment) {
-      const end = line.indexOf("]]", i);
-      if (end === -1) return { out, inBlockComment: true };
-      i = end + 2;
-      blockComment = false;
+    if (mode) {
+      const end = line.indexOf(closer, i);
+      if (end === -1) return { out, state: { mode, closer } };
+      i = end + closer.length;
+      mode = null;
+      closer = null;
       continue;
     }
     if (line[i] === "-" && line[i + 1] === "-") {
-      if (line[i + 2] === "[" && line[i + 3] === "[") {
-        const end = line.indexOf("]]", i + 4);
-        if (end === -1) return { out, inBlockComment: true };
-        i = end + 2;
+      const open = longBracketOpen(line, i + 2);
+      if (open) {
+        const end = line.indexOf(open.closer, open.end);
+        if (end === -1) return { out, state: { mode: "comment", closer: open.closer } };
+        i = end + open.closer.length;
         continue;
       }
       break;
@@ -81,13 +102,24 @@ function codeOnly(line, inBlockComment) {
         if (line[i] === "\\") i++;
         i++;
       }
+      if (i >= n) return { out, state: { mode: "string", closer: ch } };
       i++;
       continue;
+    }
+    if (ch === "[") {
+      const open = longBracketOpen(line, i);
+      if (open) {
+        out += '"x"';
+        const end = line.indexOf(open.closer, open.end);
+        if (end === -1) return { out, state: { mode: "string", closer: open.closer } };
+        i = end + open.closer.length;
+        continue;
+      }
     }
     out += ch;
     i++;
   }
-  return { out, inBlockComment: blockComment };
+  return { out, state: { mode, closer } };
 }
 
 // One pass over every shipped .lua/.ltp line: method name -> call sites.
@@ -105,12 +137,16 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
     const rel = path.relative(files.gameDir, f);
     const ctx = contextOf(rel);
     const lines = files.lines ? files.lines(f) : fs.readFileSync(f, "utf8").split(/\r?\n/);
-    let inBlockComment = false;
+    let state = null;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      // The lexer still has to see this line even when it is too long to
+      // scan for call evidence - a comment or string that closes on this
+      // very line must still advance state, or every real call after it
+      // looks like it's still inside that span forever.
+      const stripped = codeOnly(line, state);
+      state = stripped.state;
       if (line.length > 400) continue;
-      const stripped = codeOnly(line, inBlockComment);
-      inBlockComment = stripped.inBlockComment;
       for (const m of stripped.out.matchAll(re)) {
         const method = m[3];
         let e = index.get(method);
