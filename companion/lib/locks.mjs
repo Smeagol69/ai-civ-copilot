@@ -10,11 +10,17 @@ export const CLOUD_LOCK = "This is a Play By Cloud game with other people. Edits
 // Until a poll says what kind of game this is, assume the strictest.
 export const UNKNOWN_LOCK = "The copilot has not yet seen what kind of game this is; edits wait until it has.";
 
-// poll: { mp, cloud, humans } read in the game (GameConfiguration).
+// poll: { mp, cloud, humans, factsOk } read in the game (GameConfiguration).
 // Returns the lock text, or null when edits are allowed. A poll without the
-// facts keeps the current lock.
+// facts keeps the current lock - and so does one whose own getters failed:
+// both server.mjs's POLL_LUA and game.mjs's MP_FACTS_LUA default mp/cloud to
+// false and would otherwise look identical to a confirmed single-player
+// read, which could unlock (or un-stick an already-locked) multiplayer game
+// on a read that never actually happened. factsOk === false is reported by
+// both; its absence (every caller before this field existed) is treated as
+// reliable, so this is backward compatible.
 export function multiplayerLock(poll, current) {
-  if (!poll || poll.mp === undefined) return current;
+  if (!poll || poll.mp === undefined || poll.factsOk === false) return current;
   const shared = !!(poll.mp || poll.cloud);
   // Not networked: one machine, nothing to desync. Networked with an unknown
   // head-count: assume other people are there.

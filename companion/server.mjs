@@ -65,11 +65,12 @@ function makeCtx(onProgress) {
 // P.recover) and drains the game events the panel recorded.
 const POLL_LUA = `
 local mp, cloud, humans = false, false, nil
-pcall(function() mp = GameConfiguration.IsNetworkMultiplayer() end)
-pcall(function() cloud = GameConfiguration.IsPlayByCloud() end)
+local mpOk = pcall(function() mp = GameConfiguration.IsNetworkMultiplayer() end)
+local cloudOk = pcall(function() cloud = GameConfiguration.IsPlayByCloud() end)
 pcall(function() humans = GameConfiguration.GetHumanPlayerCount() end)
+local factsOk = mpOk and cloudOk
 local m = ExposedMembers and ExposedMembers.AICivCopilot
-if m == nil then emitJson({ panel = false, mp = mp, cloud = cloud, humans = humans }) return end
+if m == nil then emitJson({ panel = false, mp = mp, cloud = cloud, humans = humans, factsOk = factsOk }) return end
 local q = m.outbox or {}
 m.outbox = {}
 m.taken = m.taken or {}
@@ -79,7 +80,7 @@ for _, r in ipairs(q) do if r.id and r.id ~= 0 then m.taken[r.id] = r end end
 local ev = m.events or {}
 m.events = {}
 m.bridgeTicks = (m.bridgeTicks or 0) + 1
-emitJson({ panel = true, version = m.version, questions = q, recovered = recovered, events = ev, turn = Game.GetCurrentGameTurn(), mp = mp, cloud = cloud, humans = humans })
+emitJson({ panel = true, version = m.version, questions = q, recovered = recovered, events = ev, turn = Game.GetCurrentGameTurn(), mp = mp, cloud = cloud, humans = humans, factsOk = factsOk })
 `;
 const REPLY_LUA = `
 local m = ExposedMembers and ExposedMembers.AICivCopilot

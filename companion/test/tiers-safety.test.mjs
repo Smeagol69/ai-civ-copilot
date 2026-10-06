@@ -377,6 +377,17 @@ test("multiplayer lock: network or Play By Cloud with other people locks; single
   assert.equal(multiplayerLock({ mp: true, cloud: false, humans: null }, null), MP_LOCK, "networked with unknown head-count: assume people");
   assert.equal(multiplayerLock({ panel: false }, MP_LOCK), MP_LOCK, "a poll without the facts keeps the lock");
   assert.equal(multiplayerLock(undefined, UNKNOWN_LOCK), UNKNOWN_LOCK);
+  // factsOk: false means the getters themselves failed (false-by-default
+  // placeholders, not a confirmed read) - must not be trusted even though
+  // mp/cloud/humans are all present and well-typed. Both server.mjs's
+  // POLL_LUA and game.mjs's MP_FACTS_LUA report this the same way, so this
+  // one guard protects every caller.
+  assert.equal(multiplayerLock({ mp: false, cloud: false, humans: null, factsOk: false }, UNKNOWN_LOCK), UNKNOWN_LOCK,
+    "a failed read must not unlock from unknown");
+  assert.equal(multiplayerLock({ mp: false, cloud: false, humans: null, factsOk: false }, MP_LOCK), MP_LOCK,
+    "a failed read must not unlock an already-known multiplayer game either");
+  assert.equal(multiplayerLock({ mp: true, cloud: false, humans: 5, factsOk: true }, UNKNOWN_LOCK), MP_LOCK,
+    "a reliable read still locks normally");
 });
 
 test("a lock applied while a call is queued prevents its command from reaching the game", async () => {
