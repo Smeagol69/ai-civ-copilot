@@ -289,6 +289,52 @@ test("a probe settling after a function was blocked retains the block and the le
   assert.ok(!dig.probeCandidates(again).some((e) => e.method === "GetPopulation"));
 });
 
+test("onProgress blocking a selected getter before its chunk is sent removes it from that dispatch", async () => {
+  // cands is computed once up front and sliced into chunks; onProgress
+  // fires synchronously right before each chunk's dispatch. If it blocks
+  // a candidate at that point, the stale chunk must not still send it.
+  const memory = fakeMemory();
+  dig.mapApi(memory, fakeFiles(), memory.discovery);
+  const game = { lua: async (_state, _lua, { params }) => {
+    assert.ok(!params.calls.some((c) => c.key === "City|GetPopulation"), "GetPopulation was blocked by onProgress before this dispatch; it must not be submitted");
+    return { value: params.calls.map((c) => ({ key: c.key, type: "number", value: 1 })) };
+  } };
+  await dig.probeBatch(game, memory.discovery, {
+    onProgress: () => {
+      memory.discovery.update("GameCore_Tuner", "City", "GetPopulation", { status: "blocked", note: "blocked mid-batch" });
+    },
+  });
+});
+
+test("onProgress revoking a selected getter's zero-argument evidence before its chunk is sent removes it from that dispatch", async () => {
+  const memory = fakeMemory();
+  dig.mapApi(memory, fakeFiles(), memory.discovery);
+  const game = { lua: async (_state, _lua, { params }) => {
+    assert.ok(!params.calls.some((c) => c.key === "City|GetPopulation"), "GetPopulation's zero-arg evidence was revoked by onProgress before this dispatch; it must not be submitted");
+    return { value: params.calls.map((c) => ({ key: c.key, type: "number", value: 1 })) };
+  } };
+  await dig.probeBatch(game, memory.discovery, {
+    onProgress: () => {
+      const cur = memory.discovery.get("GameCore_Tuner", "City", "GetPopulation");
+      memory.discovery.update("GameCore_Tuner", "City", "GetPopulation", { evidence: { ...cur.evidence, zeroArgVars: [] } });
+    },
+  });
+});
+
+test("probeBatch still submits every eligible candidate when onProgress changes nothing", async () => {
+  const memory = fakeMemory();
+  dig.mapApi(memory, fakeFiles(), memory.discovery);
+  const seen = [];
+  const game = { lua: async (_state, _lua, { params }) => {
+    seen.push(...params.calls.map((c) => c.key));
+    return { value: params.calls.map((c) => ({ key: c.key, type: "number", value: 1 })) };
+  } };
+  let progressCalls = 0;
+  await dig.probeBatch(game, memory.discovery, { onProgress: () => { progressCalls++; } });
+  assert.ok(progressCalls >= 1, "onProgress is still called");
+  assert.ok(seen.includes("City|GetPopulation"), "an untouched eligible candidate is still submitted");
+});
+
 test("blocked functions can still be deliberately proven or saved as abilities", () => {
   const memory = fakeMemory();
   const files = fakeFiles();

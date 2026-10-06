@@ -302,13 +302,20 @@ export function holderPattern(holder) {
   return new RegExp(word.slice(0, Math.min(5, word.length)), "i");
 }
 
+// Shared by probeCandidates (the initial batch selection) and probeBatch's
+// per-chunk re-check (immediately before dispatch) - the two must agree on
+// exactly what "safe to probe live" means, or a candidate blocked/revoked
+// between those two points could slip through on a stale snapshot.
+function isProbeEligible(e) {
+  return e.kind === "read" && e.status === "evidenced" && !e.probe && !!probeExpr(e.holder) && (e.evidence?.zeroArgVars || []).some((v) => holderPattern(e.holder).test(v));
+}
+
 // Stage 2 candidates: zero-argument getters whose shipped usage shows a
 // zero-argument call on the same kind of object, reachable by the probe.
 // Never writes.
 export function probeCandidates(dmap, { limit = 150 } = {}) {
   return dmap.entries
-    .filter((e) => e.kind === "read" && e.status === "evidenced" && !e.probe && probeExpr(e.holder))
-    .filter((e) => (e.evidence?.zeroArgVars || []).some((v) => holderPattern(e.holder).test(v)))
+    .filter(isProbeEligible)
     .sort((a, b) => b.leverage - a.leverage)
     .slice(0, limit);
 }
@@ -355,7 +362,13 @@ export async function probeBatch(game, dmap, { limit = 120, onProgress } = {}) {
     for (let i = 0; i < list.length; i += 40) {
       const chunk = list.slice(i, i + 40);
       onProgress?.(`Probing ${state} (${probed + chunk.length}/${cands.length})...`);
-      const calls = chunk.map((e) => ({ key: `${e.holder}|${e.method}`, expr: probeExpr(e.holder), method: e.method }));
+      // cands was snapshotted once, before this loop started. onProgress
+      // (or anything else) may have blocked a candidate or revoked its
+      // zero-arg evidence since then - re-check the live entry right
+      // before dispatch so a just-blocked getter is never sent anyway.
+      const eligible = chunk.filter((e) => isProbeEligible(dmap.get(e.state, e.holder, e.method) || {}));
+      if (!eligible.length) continue;
+      const calls = eligible.map((e) => ({ key: `${e.holder}|${e.method}`, expr: probeExpr(e.holder), method: e.method }));
       const { value } = await game.lua(state, PROBE_LUA, { params: { calls }, timeoutMs: 30000 });
       for (const r of value || []) {
         const [holder, method] = r.key.split("|");
