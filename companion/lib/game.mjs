@@ -161,7 +161,10 @@ export class Game {
   // The one way into the game: Game.lua, Game.script and typed actions all
   // come through here, so the locks above cover every call.
   async exec(state, body, { params = {}, timeoutMs, label, force } = {}) {
-    if (this.autoEstablishCoreLock && !force && !CORE_LOCK_ALLOWED.has(state)) await this.#ensureCoreLockEstablished();
+    // paused means no calls at all - not even the implicit bootstrap's own
+    // read, which would otherwise reach the game via its internal
+    // force:true before #guard below ever gets to refuse the real call.
+    if (this.autoEstablishCoreLock && !force && !this.paused && !CORE_LOCK_ALLOWED.has(state)) await this.#ensureCoreLockEstablished();
     this.#guard(state, force);
     await this.ensureConnected();
     // Connection, earlier calls and the machine-wide mutex can all delay a

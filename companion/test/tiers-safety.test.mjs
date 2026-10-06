@@ -206,6 +206,27 @@ test("a direct client that cannot read the facts yet stays locked and retries on
   }
 });
 
+test("a direct client does not send any CMD for its lazy fact-finding while paused", async () => {
+  // paused means "the game is loading, leaving or between sessions: no
+  // calls at all" (a call into a half-torn-down game can crash it - the
+  // 2026-10-04 incident). The implicit bootstrap must not be exempt.
+  let cmds = 0;
+  const fake = await startFakeTuner((ctx) => { cmds++; return ctx.emitJson({ mp: true, cloud: false, humans: 5 }); });
+  const game = new Game({ port: fake.port, trace: false, establishCoreLock: true });
+  try {
+    game.paused = "the game is loading or between sessions";
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "paused");
+    assert.equal(cmds, 0, "no fact-finding CMD was sent while paused");
+    assert.equal(game.coreLocked, UNKNOWN_LOCK, "still unestablished - nothing was learned while paused");
+    game.paused = null;
+    await assert.rejects(game.lua(CORE_STATE, "emitJson(1)"), (e) => e.code === "core-locked", "once unpaused, the facts are read and this game is multiplayer");
+    assert.equal(cmds, 1, "fact-finding ran exactly once, only after pause lifted");
+  } finally {
+    game.tuner.close();
+    await fake.close();
+  }
+});
+
 test("a reply from the wrong Lua state is refused, and Invalid Lua State forces a fresh state list", async () => {
   let mode = "wrong";
   const fake = await startFakeTuner((ctx) => {
