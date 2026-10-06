@@ -13,7 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TunerClient, LuaError } from "./tuner.mjs";
 import { inflightTracer } from "./inflight.mjs";
-import { UNKNOWN_LOCK, multiplayerLock } from "./locks.mjs";
+import { UNKNOWN_LOCK, multiplayerLock, hasReliableFacts } from "./locks.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const LUA_DIR = path.join(HERE, "..", "lua");
@@ -205,14 +205,17 @@ export class Game {
           // invalidation exactly as the close handler set it.
           return;
         }
-        if (value?.factsOk) {
+        if (hasReliableFacts(value)) {
           this.coreLocked = multiplayerLock(value, this.coreLocked);
           this.coreLockEstablished = true;
         }
         // else: the call round-tripped, but the GameConfiguration getters
-        // themselves failed (not available yet) - that is not a confirmed
-        // fact, so leave coreLockEstablished false and retry on the next
-        // call, rather than trusting mp/cloud's false-by-default values.
+        // either failed (not available yet) or returned something other
+        // than real booleans for mp/cloud - neither is a confirmed fact,
+        // so leave coreLockEstablished false and retry on the next call,
+        // rather than trusting mp/cloud's false-by-default placeholder
+        // values or marking "established" on an answer that was never
+        // actually usable.
       } catch {
         // Could not read the facts yet (not connected, game not loaded) -
         // leave coreLockEstablished false and retry on the next call.
