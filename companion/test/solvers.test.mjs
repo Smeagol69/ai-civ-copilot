@@ -36,6 +36,20 @@ test("an unread production field stays unknown, never becomes idle with an inven
   assert.ok(!p.cities.find((c) => c.name === "Antium").productionUnknown);
 });
 
+test("a nonempty queue with an unresolved item name is not reported idle", () => {
+  // snapshot.lua's city.production omits item entirely whenever
+  // hashName[bq:GetCurrentProductionTypeHash()] fails to resolve, even
+  // though bq:GetSize() genuinely confirms something is queued. A falsy
+  // building name must not be read the same as a confirmed queueSize: 0.
+  const snap = { ...SNAP, cities: [...SNAP.cities, { ...SNAP.cities[0], id: 998, name: "Unnamedville", production: { turnsLeft: 3, queueSize: 1 } }] };
+  const p = solve.productionOverview(snap);
+  const row = p.cities.find((c) => c.name === "Unnamedville");
+  assert.equal(row.productionUnknown, false, "the production object itself was read successfully");
+  assert.equal(row.building, null, "the specific item name could not be resolved");
+  assert.equal(row.queueSize, 1, "the confirmed nonzero queue size must still be reported");
+  assert.ok(!p.idle.includes("Unnamedville"), "a confirmed nonempty queue must never be reported idle, even with an unresolved item name");
+});
+
 test("threat report ranks hostile units first and skips civilians", () => {
   const t = solve.threatReport(SNAP);
   assert.equal(t.hostileCount, 2);

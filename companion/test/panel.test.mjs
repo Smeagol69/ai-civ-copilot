@@ -76,6 +76,13 @@ test("formatProduction shows UNKNOWN for a city whose production could not be re
   assert.doesNotMatch(text, /Lostcity: IDLE/);
 });
 
+test("formatProduction shows a queued-but-unnamed status, not IDLE, when the item name is unresolved", () => {
+  const snap = { ...SNAP, cities: [{ ...SNAP.cities[0], id: 998, name: "Unnamedville", production: { turnsLeft: 3, queueSize: 1 } }] };
+  const text = formatProduction(snap);
+  assert.doesNotMatch(text, /Unnamedville: IDLE/);
+  assert.match(text, /Unnamedville: QUEUED, UNNAMED \(3 turns\)/);
+});
+
 test("every action button sends a typed action that passes validation", async () => {
   const seen = [];
   const fake = await startFakeTuner((ctx) => {

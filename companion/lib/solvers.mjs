@@ -51,6 +51,11 @@ export function productionOverview(snap) {
     // into the same building: null, queueSize: 0 would read as "safe to
     // end the turn" on a city whose real status was never actually read.
     const known = c.production != null;
+    // snapshot.lua's city.production omits item entirely whenever its
+    // hash lookup fails to resolve a name, even though queueSize still
+    // genuinely confirms something is queued - a falsy building name
+    // alone must not be read the same as a confirmed, empty queue.
+    const queueSize = known && typeof c.production.queueSize === "number" ? c.production.queueSize : null;
     return {
       cityId: c.id,
       name: c.name,
@@ -58,7 +63,7 @@ export function productionOverview(snap) {
       production: round(c.yields?.PRODUCTION),
       building: known ? c.production.item || null : null,
       turnsLeft: known ? c.production.turnsLeft ?? null : null,
-      queueSize: known ? c.production.queueSize ?? 0 : null,
+      queueSize,
       productionUnknown: !known,
       turnsToGrow: c.turnsToGrow,
       housingRoom: typeof c.housing === "number" ? round(c.housing - c.population) : null,
@@ -66,7 +71,10 @@ export function productionOverview(snap) {
     };
   });
   return {
-    idle: rows.filter((r) => !r.productionUnknown && !r.building).map((r) => r.name),
+    // Idle requires a CONFIRMED empty queue (queueSize === 0), not merely
+    // an unresolved item name - a nonzero queueSize proves something is
+    // building even when its specific name could not be looked up.
+    idle: rows.filter((r) => !r.building && r.queueSize === 0).map((r) => r.name),
     housingCapped: rows.filter((r) => r.housingRoom !== null && r.housingRoom <= 0).map((r) => r.name),
     unhappy: rows.filter((r) => r.amenityBalance !== null && r.amenityBalance < 0).map((r) => r.name),
     cities: rows,
