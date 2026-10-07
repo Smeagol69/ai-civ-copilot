@@ -431,11 +431,15 @@ local function ApplyTabs(items)
 	if not Controls.Panel:IsHidden() then ShowTab(m_Tab); end
 end
 
--- generation is nil for a pre-upgrade bridge, or for REPLY_LUA/BUTTONS_LUA's
--- own ambiguous case (checked and documented there) - only a confirmed
--- mismatch against this incarnation's own generation is ignored here; this
--- is a second check, not a replacement for the bridge's own.
-local function OnButtons(generation, group, items)
+-- generation is trailing, not leading: a bridge at a different version than
+-- this installed panel (install.ps1 is a manual copy step) may not send it
+-- at all, and an extra trailing argument an older signature never declared
+-- is simply ignored by Lua, where inserting it first would instead shift
+-- every other positional field by one. Only a confirmed mismatch against
+-- this incarnation's own generation is ignored here - nil (a pre-upgrade
+-- bridge, or REPLY_LUA/BUTTONS_LUA's own documented ambiguous case) is let
+-- through; this is a second check, not a replacement for the bridge's own.
+local function OnButtons(group, items, generation)
 	if generation ~= nil and generation ~= MY_GENERATION then return; end
 	if type(items) ~= "table" then return; end
 	if group == "tabs" then ApplyTabs(items); return; end
@@ -443,7 +447,7 @@ local function OnButtons(generation, group, items)
 	if m_Tab and m_Tab.dynamic == group and not Controls.Panel:IsHidden() then ShowTab(m_Tab); end
 end
 
-local function OnReply(generation, id, kind, text)
+local function OnReply(id, kind, text, generation)
 	if generation ~= nil and generation ~= MY_GENERATION then return; end
 	if id ~= 0 and kind ~= "hello" and m_Pending[id] == nil then return; end
 	if kind == "hello" then

@@ -30,15 +30,22 @@ m.bridgeTicks = (m.bridgeTicks or 0) + 1
 emitJson({ panel = true, version = m.version, generation = m.generation, questions = q, recovered = recovered, events = ev, turn = Game.GetCurrentGameTurn(), mp = mp, cloud = cloud, humans = humans, factsOk = factsOk })
 `;
 
+// generation is appended last, never prepended: the installed panel mod is
+// a manual copy (AGENTS.md's install.ps1 step) that can lag or lead this
+// source by a version, and an older OnReply(id,kind,text)/OnButtons(group,
+// items) would otherwise shift every positional field by one instead of
+// just ignoring an extra trailing argument it does not declare. A newer
+// panel called by an older REPLY_LUA/BUTTONS_LUA with no generation at all
+// simply receives nil for it - already the documented ambiguous case.
 export const REPLY_LUA = `
 local m = ExposedMembers and ExposedMembers.AICivCopilot
 local current = m and m.generation
 if current ~= nil and P.generation ~= nil and P.generation ~= current then return end
 if m and m.taken and (P.kind == "answer" or P.kind == "error") then m.taken[P.id] = nil end
-LuaEvents.AICivCopilot_Reply(P.generation, P.id, P.kind, P.text)`;
+LuaEvents.AICivCopilot_Reply(P.id, P.kind, P.text, P.generation)`;
 
 export const BUTTONS_LUA = `
 local m = ExposedMembers and ExposedMembers.AICivCopilot
 local current = m and m.generation
 if current ~= nil and P.generation ~= nil and P.generation ~= current then return end
-LuaEvents.AICivCopilot_Buttons(P.generation, P.group, P.items)`;
+LuaEvents.AICivCopilot_Buttons(P.group, P.items, P.generation)`;

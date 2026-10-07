@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import luaparse from "luaparse";
-import { REPLY_LUA, BUTTONS_LUA } from "../lib/panel-mailbox.mjs";
+import { POLL_LUA, REPLY_LUA, BUTTONS_LUA } from "../lib/panel-mailbox.mjs";
 
 const SERVER_SOURCE = fs.readFileSync(new URL("../server.mjs", import.meta.url), "utf8");
 
@@ -225,7 +225,9 @@ test("REPLY_LUA accepts a matching generation and an ambiguous (unstamped) one",
   for (const generation of [2, undefined]) {
     const exposedMembers = { AICivCopilot: { generation: 2, taken: { 7: { id: 7 } } } };
     const { fired } = runProtocol(REPLY_LUA, { exposedMembers, params: { generation, id: 7, kind: "answer", text: "ok" } });
-    assert.deepEqual(fired, [[generation, 7, "answer", "ok"]], `generation=${generation}`);
+    // generation is trailing (ABI compatibility with an older/newer
+    // installed panel - see panel-mailbox.mjs), not leading.
+    assert.deepEqual(fired, [[7, "answer", "ok", generation]], `generation=${generation}`);
     assert.equal(exposedMembers.AICivCopilot.taken[7], undefined, "an accepted answer still clears its taken entry");
   }
 });
@@ -241,7 +243,7 @@ test("BUTTONS_LUA refuses a confirmed-stale generation, accepts a matching or am
   assert.deepEqual(stale.fired, [], "a stale button update must never reach the panel");
   for (const generation of [2, undefined]) {
     const ok = runProtocol(BUTTONS_LUA, { exposedMembers: { AICivCopilot: { generation: 2 } }, params: { generation, group: "abilities", items: ["new"] } });
-    assert.deepEqual(ok.fired, [[generation, "abilities", ["new"]]]);
+    assert.deepEqual(ok.fired, [["abilities", ["new"], generation]]);
   }
 });
 
@@ -281,10 +283,107 @@ test("pollPanel's drain/recovery tail only runs once this game's panel is confir
   }
 });
 
+// The whole pollPanel function, run via vm against a full stub environment -
+// the drain-tail fragment above only covers the gate's own tail; this proves
+// the gate stays correct when a successful mid-poll injection changes
+// `loaded` after `res` (this same poll's POLL_LUA result) was already
+// captured from the panel that existed *before* that injection.
+const POLL_PANEL_START = "async function pollPanel() {";
+const POLL_PANEL_END = /\n\}\r?\n\r?\n\/\/ When the game connection/;
+function extractPollPanel() {
+  const start = SERVER_SOURCE.indexOf(POLL_PANEL_START);
+  assert.ok(start >= 0, "pollPanel start not found - the file shape changed");
+  const after = SERVER_SOURCE.slice(start);
+  const m = POLL_PANEL_END.exec(after);
+  assert.ok(m, "pollPanel end not found - the file shape changed");
+  return after.slice(0, m.index + 2); // include the function's own closing "}"
+}
+const FIXED_POLL_PANEL = extractPollPanel();
+assert.match(FIXED_POLL_PANEL, /if \(await injectPanel\(\)\) \{/, "the shipped source must discard this poll's result on a successful mid-poll injection");
+// The exact pre-fix shape this test discriminates against: injectPanel()'s
+// success just overwrote `loaded` in place, with no return - so the rest of
+// the function went on to trust this poll's already-stale `res`.
+const PRE_FIX_POLL_PANEL = FIXED_POLL_PANEL.replace(
+  /if \(await injectPanel\(\)\) \{[\s\S]*?return;\s*\}/,
+  "loaded = await injectPanel();",
+);
+assert.doesNotMatch(PRE_FIX_POLL_PANEL, /if \(await injectPanel/, "the pre-fix reconstruction must not still contain the fix");
+
+function pollPanelHarness(source, { injects }) {
+  const handled = [];
+  const recoverCalls = [];
+  let recovered = false;
+  let panelGeneration;
+  // What POLL_LUA returns this poll - captured from the panel that existed
+  // *before* any injection below, carrying its (stale, generation 1) data.
+  const staleRes = {
+    panel: true, generation: 1, version: 5, turn: 1,
+    questions: [{ id: 17, kind: "quick", key: "heal", generation: 1 }],
+    recovered: [{ id: 16, generation: 1 }], events: [], mp: false, cloud: false, humans: 1, factsOk: true,
+  };
+  const env = {
+    game: {
+      connected: true, paused: null, coreLocked: null,
+      tuner: { states: [], refreshStates: async () => {} }, // still not loaded right after the refresh
+      lua: async (state, code) => {
+        assert.equal(state, "InGame");
+        assert.equal(code, POLL_LUA);
+        return { value: staleRes };
+      },
+      standing: async () => null,
+    },
+    UI_STATE: "InGame", PANEL_STATE: "AICivCopilotPanel", POLL_LUA, UNKNOWN_LOCK: "unknown",
+    log: () => {}, stale: false, snapCache: null, applyMultiplayer: () => {}, lastStateRefresh: 0,
+    injectPanel: async () => {
+      if (!injects) return false;
+      // A real injection loads the panel's own fresh Lua context - its
+      // mailbox/generation moved on from what `staleRes` above captured.
+      env.game.tuner.states = [{ name: "AICivCopilotPanel" }];
+      return true;
+    },
+    get recovered() { return recovered; },
+    set recovered(v) { recovered = v; },
+    recover: async (list) => recoverCalls.push(list),
+    handlePanel: async (q) => handled.push(q),
+    state: {
+      panel: false, lastHistoryTurn: 1,
+      get panelGeneration() { return panelGeneration; },
+      set panelGeneration(v) { panelGeneration = v; },
+    },
+    memory: { events: { add: () => {} }, history: { record: () => {} } },
+    reply: async () => {}, sendButtons: async () => {},
+    shortModel: (s) => s, ADVISOR_MODEL: "advisor", DIG_MODEL: "dig", TABS: [], abilityButtons: () => [],
+  };
+  return { env, handled, recoverCalls, resultOf: () => ({ recovered, panelGeneration }) };
+}
+
+test("a successful mid-poll injection defers this poll's stale pre-injection mailbox to the next poll", async () => {
+  for (const injects of [true, false]) {
+    const { env, handled, recoverCalls, resultOf } = pollPanelHarness(FIXED_POLL_PANEL, { injects });
+    const context = vm.createContext(env);
+    vm.runInContext(`${FIXED_POLL_PANEL}\nglobalThis.__invoke = pollPanel;`, context);
+    await context.__invoke();
+    assert.deepEqual(handled, [], `injects=${injects}: a request captured before injection must never dispatch this poll`);
+    assert.deepEqual(recoverCalls, [], `injects=${injects}`);
+    assert.equal(resultOf().recovered, false, `injects=${injects}: recovered must stay false so a later, genuinely-fresh poll still recovers`);
+    assert.equal(resultOf().panelGeneration, undefined, `injects=${injects}: must not adopt the stale res's generation as current`);
+  }
+});
+
+test("the pre-fix shape actually dispatched the stale pre-injection request (this reproduces the real bug)", async () => {
+  const { env, handled, recoverCalls, resultOf } = pollPanelHarness(PRE_FIX_POLL_PANEL, { injects: true });
+  const context = vm.createContext(env);
+  vm.runInContext(`${PRE_FIX_POLL_PANEL}\nglobalThis.__invoke = pollPanel;`, context);
+  await context.__invoke();
+  assert.deepEqual(handled, [{ id: 17, kind: "quick", key: "heal", generation: 1 }], "confirms the pre-fix code dispatched a request captured before the injection that replaced its mailbox");
+  assert.deepEqual(recoverCalls, [[{ id: 16, generation: 1 }]]);
+  assert.equal(resultOf().panelGeneration, 1, "confirms it also adopted the stale generation as current, corrupting later reply/button routing");
+});
+
 test("the panel's own OnButtons/OnReply guard line mirrors the same confirmed-mismatch-only rule", () => {
   for (const [signature, extra] of [
-    ["local function OnButtons(generation, group, items)", {}],
-    ["local function OnReply(generation, id, kind, text)", {}],
+    ["local function OnButtons(group, items, generation)", {}],
+    ["local function OnReply(id, kind, text, generation)", {}],
   ]) {
     const guard = extractGuardLine(signature);
     assert.match(guard, /generation ~= nil and generation ~= MY_GENERATION/, signature);
@@ -296,5 +395,29 @@ test("the panel's own OnButtons/OnReply guard line mirrors the same confirmed-mi
       // falling through to it (shouldReturn=false) does.
       assert.equal(r?.[RETURN] !== "reached", shouldReturn, `${signature} generation=${generation}`);
     }
+  }
+});
+
+function extractParams(signature) {
+  assert.ok(PANEL_SOURCE.includes(signature), `${signature} not found - the file shape changed`);
+  const m = /\(([^)]*)\)/.exec(signature);
+  return m[1].split(",").map((s) => s.trim());
+}
+
+test("generation is the trailing parameter on both sides of the wire, not a leading one", () => {
+  // Lua silently drops an extra trailing call argument a callee never
+  // declared, and gives nil for a declared trailing parameter the caller
+  // never supplied - but shifts every position if a field is inserted at
+  // the front instead. generation must stay last everywhere for an
+  // older/newer bridge-panel pair's existing fields to never shift:
+  // REPLY_LUA/BUTTONS_LUA's LuaEvents calls (panel-mailbox.mjs, checked
+  // directly here, not just by reading the module) and the panel's own
+  // OnReply/OnButtons declarations (checked via the real extracted source,
+  // like the guard-line test above).
+  assert.match(REPLY_LUA, /LuaEvents\.AICivCopilot_Reply\(P\.id, P\.kind, P\.text, P\.generation\)/);
+  assert.match(BUTTONS_LUA, /LuaEvents\.AICivCopilot_Buttons\(P\.group, P\.items, P\.generation\)/);
+  for (const signature of ["local function OnReply(id, kind, text, generation)", "local function OnButtons(group, items, generation)"]) {
+    const params = extractParams(signature);
+    assert.equal(params.at(-1), "generation", signature);
   }
 });

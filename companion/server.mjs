@@ -358,7 +358,19 @@ async function pollPanel() {
     }
     if (fresh && !loaded) {
       log(`the copilot panel is not loaded in this game (no "${PANEL_STATE}" Lua state); adding it`);
-      loaded = await injectPanel();
+      if (await injectPanel()) {
+        // injectPanel() just (re)loaded the panel's own Lua context, which
+        // reset its mailbox and bumped its generation - but res (above) was
+        // drained by POLL_LUA before that happened, so it is still whatever
+        // (possibly another game's, possibly stale) mailbox existed before
+        // this panel did. Trusting it now - the bug this exact pattern
+        // already fixed once for the panel's own init, now recurring here -
+        // would dispatch a stale request as if it were this panel's own.
+        // Treat this poll as having learned nothing current about the panel
+        // yet; the very next poll (500 ms later) reads this fresh panel's
+        // own mailbox instead.
+        return;
+      }
     }
   }
   state.panelLoaded = loaded;
