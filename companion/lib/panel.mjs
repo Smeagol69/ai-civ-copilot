@@ -46,7 +46,22 @@ export function formatOverview(snap) {
 
 export function formatProduction(snap) {
   const p = solve.productionOverview(snap);
-  const status = (c) => (c.productionUnknown ? "UNKNOWN" : c.building ? `${pretty(c.building)} (${c.turnsLeft} turns)` : c.queueSize > 0 ? `QUEUED, UNNAMED (${c.turnsLeft} turns)` : "IDLE");
+  // A known item name is sufficient on its own, regardless of whether
+  // queueSize was separately confirmed. Only once there is no name does
+  // queueSize matter - and queueSize is null, not a confirmed 0,
+  // whenever the count itself was never actually read; that must show
+  // as UNKNOWN too, not fall through to IDLE just because it also fails
+  // a plain > 0 check.
+  const status = (c) =>
+    c.productionUnknown
+      ? "UNKNOWN"
+      : c.building
+        ? `${pretty(c.building)} (${c.turnsLeft} turns)`
+        : c.queueSize == null
+          ? "UNKNOWN"
+          : c.queueSize > 0
+            ? `QUEUED, UNNAMED (${c.turnsLeft} turns)`
+            : "IDLE";
   const lines = p.cities.map((c) => `- ${c.name}: ${status(c)}, pop ${c.population}, prod ${c.production}`);
   if (p.idle.length) lines.push(`Idle: ${p.idle.join(", ")}`);
   if (p.housingCapped.length) lines.push(`Out of housing: ${p.housingCapped.join(", ")}`);

@@ -83,6 +83,27 @@ test("formatProduction shows a queued-but-unnamed status, not IDLE, when the ite
   assert.match(text, /Unnamedville: QUEUED, UNNAMED \(3 turns\)/);
 });
 
+test("formatProduction shows UNKNOWN, not IDLE, when the production object is present but its queue count is unresolved", () => {
+  // productionOverview's own idle list already excludes these (queueSize
+  // is null, not a confirmed 0) - but the display used queueSize > 0 as
+  // its only signal for "not idle", and null > 0 is false, falling
+  // through to IDLE anyway for a count that was never actually confirmed.
+  for (const production of [{ turnsLeft: 3 }, { turnsLeft: 3, queueSize: null }, { turnsLeft: 3, queueSize: "1" }]) {
+    const snap = { ...SNAP, cities: [{ ...SNAP.cities[0], id: 997, name: "Testcity", production }] };
+    const text = formatProduction(snap);
+    assert.doesNotMatch(text, /Testcity: IDLE/, JSON.stringify(production));
+    assert.match(text, /Testcity: UNKNOWN/, JSON.stringify(production));
+  }
+});
+
+test("formatProduction still shows a known item name even when its own queueSize was not separately confirmed", () => {
+  // A resolved item name is sufficient on its own - it must not be
+  // demoted to UNKNOWN just because queueSize happens to be missing.
+  const snap = { ...SNAP, cities: [{ ...SNAP.cities[0], id: 996, name: "Namedville", production: { item: "UNIT_WARRIOR", turnsLeft: 2 } }] };
+  const text = formatProduction(snap);
+  assert.match(text, /Namedville: Warrior \(2 turns\)/);
+});
+
 test("every action button sends a typed action that passes validation", async () => {
   const seen = [];
   const fake = await startFakeTuner((ctx) => {
