@@ -299,23 +299,48 @@ function extractPollPanel() {
   return after.slice(0, m.index + 2); // include the function's own closing "}"
 }
 const FIXED_POLL_PANEL = extractPollPanel();
-assert.match(FIXED_POLL_PANEL, /if \(await injectPanel\(\)\) \{/, "the shipped source must discard this poll's result on a successful mid-poll injection");
-// The exact pre-fix shape this test discriminates against: injectPanel()'s
-// success just overwrote `loaded` in place, with no return - so the rest of
-// the function went on to trust this poll's already-stale `res`.
+assert.match(FIXED_POLL_PANEL, /if \(justFound\) return;/, "the shipped source must discard this poll's result on any absent-to-loaded discovery, not only a successful injection");
+// The exact round-45 (053a57c) shape this test discriminates against:
+// only injectPanel()'s own success returned early. refreshStates() alone
+// revealing the panel already loaded (no injection needed or attempted)
+// fell through and trusted this poll's already-stale `res` regardless.
 const PRE_FIX_POLL_PANEL = FIXED_POLL_PANEL.replace(
-  /if \(await injectPanel\(\)\) \{[\s\S]*?return;\s*\}/,
-  "loaded = await injectPanel();",
+  /let justFound = false;\r?\n  if \(!loaded[\s\S]*?\r?\n  if \(justFound\) return;\r?\n/,
+  `if (!loaded && Date.now() - lastStateRefresh > 15000) {
+    lastStateRefresh = Date.now();
+    let fresh = false;
+    try {
+      await game.tuner.refreshStates();
+      fresh = true;
+      loaded = game.tuner.states.some((s) => s.name === PANEL_STATE);
+    } catch {
+      // keep the last answer
+    }
+    if (fresh && !loaded) {
+      log(\`the copilot panel is not loaded in this game (no "\${PANEL_STATE}" Lua state); adding it\`);
+      if (await injectPanel()) {
+        return;
+      }
+    }
+  }
+`,
 );
-assert.doesNotMatch(PRE_FIX_POLL_PANEL, /if \(await injectPanel/, "the pre-fix reconstruction must not still contain the fix");
+assert.doesNotMatch(PRE_FIX_POLL_PANEL, /justFound/, "the pre-fix reconstruction must not still contain the fix");
 
-function pollPanelHarness(source, { injects }) {
+// mode: "inject" - refreshStates() finds it still missing, injectPanel()
+//   succeeds (the round-45 fix's own case).
+// "refresh" - refreshStates() alone reveals the panel already loaded (the
+//   round-46 mandatory residual: no injection attempted or needed at all).
+// "failed" - injectPanel() fails; the panel is genuinely absent.
+function pollPanelHarness(source, mode) {
   const handled = [];
   const recoverCalls = [];
+  const injectCalls = [];
   let recovered = false;
   let panelGeneration;
   // What POLL_LUA returns this poll - captured from the panel that existed
-  // *before* any injection below, carrying its (stale, generation 1) data.
+  // *before* anything below changes the live state list, carrying its
+  // (stale, generation 1) data.
   const staleRes = {
     panel: true, generation: 1, version: 5, turn: 1,
     questions: [{ id: 17, kind: "quick", key: "heal", generation: 1 }],
@@ -324,7 +349,15 @@ function pollPanelHarness(source, { injects }) {
   const env = {
     game: {
       connected: true, paused: null, coreLocked: null,
-      tuner: { states: [], refreshStates: async () => {} }, // still not loaded right after the refresh
+      tuner: {
+        states: [],
+        refreshStates: async () => {
+          // A panel that loaded on its own (not through our own
+          // injectPanel) between POLL_LUA running and this refresh
+          // resolving - the exact residual this round's fix covers.
+          if (mode === "refresh") env.game.tuner.states = [{ name: "AICivCopilotPanel" }];
+        },
+      },
       lua: async (state, code) => {
         assert.equal(state, "InGame");
         assert.equal(code, POLL_LUA);
@@ -335,7 +368,8 @@ function pollPanelHarness(source, { injects }) {
     UI_STATE: "InGame", PANEL_STATE: "AICivCopilotPanel", POLL_LUA, UNKNOWN_LOCK: "unknown",
     log: () => {}, stale: false, snapCache: null, applyMultiplayer: () => {}, lastStateRefresh: 0,
     injectPanel: async () => {
-      if (!injects) return false;
+      injectCalls.push(mode);
+      if (mode !== "inject") return false;
       // A real injection loads the panel's own fresh Lua context - its
       // mailbox/generation moved on from what `staleRes` above captured.
       env.game.tuner.states = [{ name: "AICivCopilotPanel" }];
@@ -354,30 +388,35 @@ function pollPanelHarness(source, { injects }) {
     reply: async () => {}, sendButtons: async () => {},
     shortModel: (s) => s, ADVISOR_MODEL: "advisor", DIG_MODEL: "dig", TABS: [], abilityButtons: () => [],
   };
-  return { env, handled, recoverCalls, resultOf: () => ({ recovered, panelGeneration }) };
+  return { env, handled, recoverCalls, injectCalls, resultOf: () => ({ recovered, panelGeneration }) };
 }
 
-test("a successful mid-poll injection defers this poll's stale pre-injection mailbox to the next poll", async () => {
-  for (const injects of [true, false]) {
-    const { env, handled, recoverCalls, resultOf } = pollPanelHarness(FIXED_POLL_PANEL, { injects });
-    const context = vm.createContext(env);
-    vm.runInContext(`${FIXED_POLL_PANEL}\nglobalThis.__invoke = pollPanel;`, context);
-    await context.__invoke();
-    assert.deepEqual(handled, [], `injects=${injects}: a request captured before injection must never dispatch this poll`);
-    assert.deepEqual(recoverCalls, [], `injects=${injects}`);
-    assert.equal(resultOf().recovered, false, `injects=${injects}: recovered must stay false so a later, genuinely-fresh poll still recovers`);
-    assert.equal(resultOf().panelGeneration, undefined, `injects=${injects}: must not adopt the stale res's generation as current`);
+async function runPollPanel(source, mode) {
+  const harness = pollPanelHarness(source, mode);
+  const context = vm.createContext(harness.env);
+  vm.runInContext(`${source}\nglobalThis.__invoke = pollPanel;`, context);
+  await context.__invoke();
+  return harness;
+}
+
+test("any absent-to-loaded discovery this poll defers its stale pre-discovery mailbox to the next poll", async () => {
+  for (const mode of ["inject", "refresh", "failed"]) {
+    const { handled, recoverCalls, injectCalls, resultOf } = await runPollPanel(FIXED_POLL_PANEL, mode);
+    assert.deepEqual(handled, [], `mode=${mode}: a request captured before discovery must never dispatch this poll`);
+    assert.deepEqual(recoverCalls, [], `mode=${mode}`);
+    assert.equal(resultOf().recovered, false, `mode=${mode}: recovered must stay false so a later, genuinely-fresh poll still recovers`);
+    assert.equal(resultOf().panelGeneration, undefined, `mode=${mode}: must not adopt the stale res's generation as current`);
+    assert.deepEqual(injectCalls, mode === "refresh" ? [] : [mode], `mode=${mode}: refreshStates alone finding it must never also call injectPanel`);
   }
 });
 
-test("the pre-fix shape actually dispatched the stale pre-injection request (this reproduces the real bug)", async () => {
-  const { env, handled, recoverCalls, resultOf } = pollPanelHarness(PRE_FIX_POLL_PANEL, { injects: true });
-  const context = vm.createContext(env);
-  vm.runInContext(`${PRE_FIX_POLL_PANEL}\nglobalThis.__invoke = pollPanel;`, context);
-  await context.__invoke();
-  assert.deepEqual(handled, [{ id: 17, kind: "quick", key: "heal", generation: 1 }], "confirms the pre-fix code dispatched a request captured before the injection that replaced its mailbox");
-  assert.deepEqual(recoverCalls, [[{ id: 16, generation: 1 }]]);
-  assert.equal(resultOf().panelGeneration, 1, "confirms it also adopted the stale generation as current, corrupting later reply/button routing");
+test("the round-45 pre-fix shape missed the refresh-alone discovery path (this reproduces the mandatory residual)", async () => {
+  const injected = await runPollPanel(PRE_FIX_POLL_PANEL, "inject");
+  assert.deepEqual(injected.handled, [], "injectPanel's own success was already fixed in round 45");
+  const refreshed = await runPollPanel(PRE_FIX_POLL_PANEL, "refresh");
+  assert.deepEqual(refreshed.handled, [{ id: 17, kind: "quick", key: "heal", generation: 1 }], "confirms the round-45 shape dispatched a request captured before a refresh-alone discovery replaced its mailbox");
+  assert.deepEqual(refreshed.recoverCalls, [[{ id: 16, generation: 1 }]]);
+  assert.equal(refreshed.resultOf().panelGeneration, 1, "confirms it also adopted the stale generation as current, corrupting later reply/button routing");
 });
 
 test("the panel's own OnButtons/OnReply guard line mirrors the same confirmed-mismatch-only rule", () => {

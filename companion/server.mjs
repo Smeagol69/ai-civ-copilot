@@ -346,6 +346,18 @@ async function pollPanel() {
   // Injecting happens only right after a fresh state list confirms the panel
   // is missing, so a slow list never leads to a second panel.
   let loaded = game.tuner.states.some((s) => s.name === PANEL_STATE);
+  // Discovered true below (by refreshStates() alone, or by injectPanel())
+  // means the panel was not loaded a moment ago, when POLL_LUA drained res
+  // (above) - from whatever (possibly another game's, possibly stale)
+  // mailbox existed then, not this panel's own, which may have since
+  // (re)initialized and advanced past it entirely on its own, with no
+  // injection involved. Trusting res here - the bug this exact pattern
+  // already fixed once for the panel's own init - would dispatch/recover a
+  // stale request as if it were this panel's own and adopt its stale
+  // generation. Deferring to the next poll (500 ms later) instead, which
+  // reads this panel's genuinely fresh mailbox regardless of which of the
+  // two paths below found it.
+  let justFound = false;
   if (!loaded && Date.now() - lastStateRefresh > 15000) {
     lastStateRefresh = Date.now();
     let fresh = false;
@@ -356,23 +368,14 @@ async function pollPanel() {
     } catch {
       // keep the last answer
     }
-    if (fresh && !loaded) {
+    if (fresh && loaded) {
+      justFound = true;
+    } else if (fresh && !loaded) {
       log(`the copilot panel is not loaded in this game (no "${PANEL_STATE}" Lua state); adding it`);
-      if (await injectPanel()) {
-        // injectPanel() just (re)loaded the panel's own Lua context, which
-        // reset its mailbox and bumped its generation - but res (above) was
-        // drained by POLL_LUA before that happened, so it is still whatever
-        // (possibly another game's, possibly stale) mailbox existed before
-        // this panel did. Trusting it now - the bug this exact pattern
-        // already fixed once for the panel's own init, now recurring here -
-        // would dispatch a stale request as if it were this panel's own.
-        // Treat this poll as having learned nothing current about the panel
-        // yet; the very next poll (500 ms later) reads this fresh panel's
-        // own mailbox instead.
-        return;
-      }
+      justFound = loaded = await injectPanel();
     }
   }
+  if (justFound) return;
   state.panelLoaded = loaded;
   state.panelVersion = res.version ?? null;
   if (res.events?.length) {
