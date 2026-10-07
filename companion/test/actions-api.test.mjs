@@ -89,7 +89,7 @@ test("a non-unit purchase verifies the specific acquired item, not just unrelate
   const b = actionBodies();
   assert.match(
     b.purchase,
-    /verifyArgs\.hadBuildingBefore = c:GetBuildings\(\):HasBuilding\(row\.Index\) == true/,
+    /c:GetBuildings\(\):HasBuilding\(row\.Index\)[\s\S]*?verifyArgs\.hadBuildingBefore = hb/,
     "A.purchase must snapshot whether the city already had this building, using the same API finish_production/snapshot.lua already use",
   );
   assert.match(
@@ -118,7 +118,35 @@ test("countCityDistricts mirrors countUnits: counts completed districts of the t
   const src = loadLua("actions");
   assert.match(src, /local function countCityDistricts\(c, districtType\)/);
   assert.match(src, /GetDistricts\(\):Members\(\)/);
-  assert.match(src, /d:IsComplete\(\)/, "an incomplete (still under construction) district must not count as acquired");
+  assert.match(src, /complete = d:IsComplete\(\)/, "an incomplete (still under construction) district must not count as acquired");
+});
+
+test("a non-unit purchase does not manufacture an acquisition from an unreliable before/after read", () => {
+  // Lua treats any non-nil/non-false value (0, "", an unexpected string) as
+  // truthy, and `x == true` silently turns any non-true value into a
+  // confirmed "false" - so a bare truthy check, or a plain == true
+  // baseline capture, cannot tell "confirmed absent/incomplete" apart from
+  // "the read was unreliable". An unreliable BASELINE must never be read
+  // as confirmed absence: a later genuine true/complete reading would then
+  // manufacture a false->true acquisition that was never actually
+  // observed to transition.
+  const b = actionBodies();
+  const src = loadLua("actions");
+  assert.match(
+    b.purchase,
+    /local hb = c:GetBuildings\(\):HasBuilding\(row\.Index\)\s*\n\s*if hb == true or hb == false then verifyArgs\.hadBuildingBefore = hb end/,
+    "A.purchase must only record a building baseline when the read is a genuine boolean, not coerce anything else into 'did not have it'",
+  );
+  assert.match(
+    src,
+    /if complete ~= true and complete ~= false then return nil end/,
+    "countCityDistricts must return nil (unknown) - not a guessed count - when a matching district's completion read is not a reliable boolean",
+  );
+  assert.match(
+    b.verify_purchase,
+    /o\.districtsNow ~= nil and spent and o\.districtsNow > P\.districtsBefore/,
+    "the district acquisition check must require a reliable after-read count before comparing it, not silently fall back to 'no change'",
+  );
 });
 
 // A plain substring/regex match can't tell "this text is present" from "this

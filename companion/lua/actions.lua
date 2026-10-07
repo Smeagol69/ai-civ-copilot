@@ -122,12 +122,21 @@ local function countUnits(pid, unitType)
 end
 
 -- Mirrors countUnits, for verifying a district purchase/build the same
--- way: a district that is not yet complete has not actually been acquired.
+-- way: a district that is not yet complete has not actually been
+-- acquired. Returns nil (unknown) instead of guessing a count if any
+-- matching district's completion read is not a reliable boolean - Lua
+-- treats any non-nil/non-false value (0, "", a string) as truthy, so a
+-- bare `if d:IsComplete() then` would silently miscount an unreliable
+-- read as complete.
 local function countCityDistricts(c, districtType)
   local n = 0
   for _, d in c:GetDistricts():Members() do
     local r = GameInfo.Districts[d:GetType()]
-    if (r and r.DistrictType == districtType) and d:IsComplete() then n = n + 1 end
+    if r and r.DistrictType == districtType then
+      local complete = d:IsComplete()
+      if complete ~= true and complete ~= false then return nil end
+      if complete then n = n + 1 end
+    end
   end
   return n
 end
@@ -242,7 +251,12 @@ function A.purchase(P)
   if t.tbl == 'Units' then
     verifyArgs.unitsBefore = countUnits(me, P.item)
   elseif t.tbl == 'Buildings' then
-    verifyArgs.hadBuildingBefore = c:GetBuildings():HasBuilding(row.Index) == true
+    -- Only a confirmed boolean counts as a known baseline - coercing an
+    -- unreliable read (nil, a non-boolean truthy value) into "did not
+    -- have it before" would let a later genuine true read manufacture an
+    -- acquisition that was never actually confirmed to have happened.
+    local hb = c:GetBuildings():HasBuilding(row.Index)
+    if hb == true or hb == false then verifyArgs.hadBuildingBefore = hb end
   elseif t.tbl == 'Districts' then
     verifyArgs.districtsBefore = countCityDistricts(c, P.item)
   end
@@ -265,8 +279,14 @@ function A.verify_purchase(P)
     o.ok = spent and o.hasBuildingNow and not P.hadBuildingBefore
   elseif P.districtsBefore ~= nil then
     local c = uiCity(P)
-    o.districtsNow = c and countCityDistricts(c, P.item) or P.districtsBefore
-    o.ok = spent and o.districtsNow > P.districtsBefore
+    -- c and countCityDistricts(...) or P.districtsBefore would silently
+    -- fall back to the baseline (reading as "no change") whenever the
+    -- after-read itself comes back nil (city gone, or an unreliable
+    -- completion read) - comparing against itself rather than leaving the
+    -- after-read explicitly unknown. o.districtsNow must stay nil here so
+    -- the check below cannot mistake it for a real count.
+    o.districtsNow = c and countCityDistricts(c, P.item)
+    o.ok = o.districtsNow ~= nil and spent and o.districtsNow > P.districtsBefore
   else
     -- No verified per-item acquisition check for this item type (e.g. a
     -- Project): never read unrelated spending alone as confirmation.
