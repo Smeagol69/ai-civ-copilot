@@ -121,6 +121,17 @@ local function countUnits(pid, unitType)
   return n
 end
 
+-- Mirrors countUnits, for verifying a district purchase/build the same
+-- way: a district that is not yet complete has not actually been acquired.
+local function countCityDistricts(c, districtType)
+  local n = 0
+  for _, d in c:GetDistricts():Members() do
+    local r = GameInfo.Districts[d:GetType()]
+    if (r and r.DistrictType == districtType) and d:IsComplete() then n = n + 1 end
+  end
+  return n
+end
+
 ------------------------------------------------------------------ PLAY
 -- Production follows ProductionPanel.GetBuildInsertMode: a plain click is
 -- VALUE_REPLACE_AT position 0 (replace the current item, keep the rest of
@@ -223,7 +234,18 @@ function A.purchase(P)
     goldBefore = Players[me]:GetTreasury():GetGoldBalance(),
     faithBefore = Players[me]:GetReligion():GetFaithBalance(),
   }
-  if t.tbl == 'Units' then verifyArgs.unitsBefore = countUnits(me, P.item) end
+  -- A gold/faith decrease alone never confirms WHICH item was acquired -
+  -- an unrelated spend (upkeep, another purchase, a deal) during the
+  -- read-back window would otherwise look identical. Snapshot whatever
+  -- this item type has a verified existence check for, so verify_purchase
+  -- can re-check the specific item, not just the balance.
+  if t.tbl == 'Units' then
+    verifyArgs.unitsBefore = countUnits(me, P.item)
+  elseif t.tbl == 'Buildings' then
+    verifyArgs.hadBuildingBefore = c:GetBuildings():HasBuilding(row.Index) == true
+  elseif t.tbl == 'Districts' then
+    verifyArgs.districtsBefore = countCityDistricts(c, P.item)
+  end
   CityManager.RequestCommand(c, CityCommandTypes.PURCHASE, params)
   return { ok = true, requested = true, verifyArgs = verifyArgs }
 end
@@ -231,10 +253,25 @@ function A.verify_purchase(P)
   local gold = Players[me]:GetTreasury():GetGoldBalance()
   local faith = Players[me]:GetReligion():GetFaithBalance()
   local o = { goldBefore = P.goldBefore, goldNow = gold, faithBefore = P.faithBefore, faithNow = faith }
-  if P.yield == 'YIELD_FAITH' then o.ok = faith < (P.faithBefore or faith) else o.ok = gold < (P.goldBefore or gold) end
+  local spent
+  if P.yield == 'YIELD_FAITH' then spent = faith < (P.faithBefore or faith) else spent = gold < (P.goldBefore or gold) end
   if P.unitsBefore ~= nil then
     o.unitsNow = countUnits(me, P.item)
-    o.ok = o.ok and o.unitsNow > P.unitsBefore
+    o.ok = spent and o.unitsNow > P.unitsBefore
+  elseif P.hadBuildingBefore ~= nil then
+    local row = resolveItem(P.item)
+    local c = uiCity(P)
+    o.hasBuildingNow = row ~= nil and c ~= nil and c:GetBuildings():HasBuilding(row.Index) == true
+    o.ok = spent and o.hasBuildingNow and not P.hadBuildingBefore
+  elseif P.districtsBefore ~= nil then
+    local c = uiCity(P)
+    o.districtsNow = c and countCityDistricts(c, P.item) or P.districtsBefore
+    o.ok = spent and o.districtsNow > P.districtsBefore
+  else
+    -- No verified per-item acquisition check for this item type (e.g. a
+    -- Project): never read unrelated spending alone as confirmation.
+    o.ok = false
+    o.note = 'cannot verify this item type was acquired; spending alone is not confirmation'
   end
   return o
 end

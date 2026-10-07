@@ -81,6 +81,46 @@ test("risky edits copy Firaxis' call shapes", () => {
   assert.match(b.unit_operation, /startsWar/);
 });
 
+test("a non-unit purchase verifies the specific acquired item, not just unrelated spending", () => {
+  // verify_purchase otherwise only checks P.unitsBefore (set for Units);
+  // a building/district purchase had no per-item check at all, so an
+  // unrelated gold/faith change (upkeep, another purchase, a deal) during
+  // the read-back window would confirm a purchase that never happened.
+  const b = actionBodies();
+  assert.match(
+    b.purchase,
+    /verifyArgs\.hadBuildingBefore = c:GetBuildings\(\):HasBuilding\(row\.Index\) == true/,
+    "A.purchase must snapshot whether the city already had this building, using the same API finish_production/snapshot.lua already use",
+  );
+  assert.match(
+    b.purchase,
+    /verifyArgs\.districtsBefore = countCityDistricts\(c, P\.item\)/,
+    "A.purchase must snapshot how many of this district type the city already had",
+  );
+  assert.match(
+    b.verify_purchase,
+    /P\.hadBuildingBefore[\s\S]*?HasBuilding\(row\.Index\)/,
+    "verify_purchase must re-check the specific building, not just the balance",
+  );
+  assert.match(
+    b.verify_purchase,
+    /P\.districtsBefore[\s\S]*?countCityDistricts\(c, P\.item\)/,
+    "verify_purchase must re-check the specific district count, not just the balance",
+  );
+  assert.match(
+    b.verify_purchase,
+    /o\.ok = false\s*\n\s*o\.note = /,
+    "an item type with no verified acquisition check (e.g. a Project) must never read unrelated spending as confirmation",
+  );
+});
+
+test("countCityDistricts mirrors countUnits: counts completed districts of the target type", () => {
+  const src = loadLua("actions");
+  assert.match(src, /local function countCityDistricts\(c, districtType\)/);
+  assert.match(src, /GetDistricts\(\):Members\(\)/);
+  assert.match(src, /d:IsComplete\(\)/, "an incomplete (still under construction) district must not count as acquired");
+});
+
 // A plain substring/regex match can't tell "this text is present" from "this
 // text actually runs and decides the result" - a mutation deleting the
 // DELETE branch's own `return o` would still match any regex built from its
