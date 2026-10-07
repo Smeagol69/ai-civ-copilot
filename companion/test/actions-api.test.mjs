@@ -111,10 +111,19 @@ function parseFunctionBody(luaFunctionBody) {
   return ast.body[0].body;
 }
 
-test("DELETE verification runs first, requires a fresh authoritative lookup, and cannot fall through", () => {
+test("DELETE verification runs first and uses one coherent player+unit lookup", () => {
   const statements = parseFunctionBody(actionBodies().verify_unit_command);
-  const firstIf = statements.find((s) => s.type === "IfStatement");
-  assert.ok(firstIf, "verify_unit_command must have at least one command-specific branch");
+
+  // The DELETE branch must be the function's very first statement - not
+  // preceded by a generic "local u = uiUnit(P)". That call does its own
+  // internal checkPlayer, independently of any checkPlayer called later
+  // inside the branch: if the first one fails transiently (IsValid false
+  // or throwing) and a second, later checkPlayer call then recovers, a u
+  // computed from the FIRST (failed) call would get paired with a pid
+  // from the SECOND (recovered) call - reading as "GetUnit ran and found
+  // nothing" when GetUnit was never actually called with a valid pid.
+  const firstIf = statements[0];
+  assert.equal(firstIf?.type, "IfStatement", "the DELETE check must be the function's first statement, before any generic lookup whose pid/unit could be reused incoherently");
 
   const cond = firstIf.clauses[0].condition;
   // luaparse 0.3.x leaves StringLiteral.value null; .raw keeps the quotes.
@@ -124,24 +133,36 @@ test("DELETE verification runs first, requires a fresh authoritative lookup, and
     cond.type === "BinaryExpression" &&
     cond.operator === "==" &&
     ((isCommandMember(cond.left) && isDelete(cond.right)) || (isCommandMember(cond.right) && isDelete(cond.left)));
-  assert.ok(isDeleteCheck, "the first command-specific branch must be the DELETE check, so no other metadata (promotionIndex, UPGRADE) can run first and substitute for it");
+  assert.ok(isDeleteCheck, "the first statement's condition must be the DELETE check, so no other metadata (promotionIndex, UPGRADE) can run first and substitute for it");
 
   const branchBody = firstIf.clauses[0].body;
   assert.equal(branchBody.at(-1)?.type, "ReturnStatement", "the DELETE branch must end in a return - it must never fall through to a later branch");
 
   const pidDecl = branchBody.find((s) => s.type === "LocalStatement" && s.variables.some((v) => v.name === "pid"));
-  assert.ok(pidDecl, "the branch must look up the player directly - reusing u alone would still hide a failed lookup behind the same nil as a confirmed-absent unit");
+  assert.ok(pidDecl, "the branch must declare its own pid");
   assert.ok(
     pidDecl.init.some((e) => e.type === "CallExpression" && e.base?.type === "Identifier" && e.base.name === "checkPlayer"),
-    "pid must come from checkPlayer(P), the same authoritative lookup uiUnit uses internally",
+    "pid must come from checkPlayer(P)",
+  );
+
+  const uDecl = branchBody.find((s) => s.type === "LocalStatement" && s.variables.some((v) => v.name === "u"));
+  assert.ok(uDecl, "the branch must declare its own u, looked up from the SAME pid it just checked - never reuse a u computed outside this branch by a separate, independently-fallible checkPlayer call");
+  const uInit = uDecl.init[0];
+  assert.equal(uInit?.type, "LogicalExpression", "u must be gated on pid (pid and UnitManager.GetUnit(pid, ...)), not computed unconditionally");
+  assert.equal(uInit.operator, "and");
+  assert.ok(refersTo(uInit.left, "pid"), "u's gate must be the SAME pid just declared");
+  const getUnitCall = uInit.right;
+  assert.equal(getUnitCall?.type, "CallExpression");
+  assert.ok(refersTo(getUnitCall.base, "GetUnit"), "u must come from a GetUnit lookup");
+  assert.ok(
+    getUnitCall.arguments?.some((a) => a.type === "Identifier" && a.name === "pid"),
+    "GetUnit must be called with the SAME pid just checked - a coherent single lookup, not pid and u from two different checkPlayer calls",
   );
 
   const okAssign = branchBody.find((s) => s.type === "AssignmentStatement" && s.variables.some((v) => v.type === "MemberExpression" && v.identifier?.name === "ok"));
   assert.ok(okAssign, "the branch must assign o.ok");
-  assert.ok(
-    refersTo(okAssign.init[0], "pid"),
-    "o.ok must depend on pid (the fresh lookup), not only on after/u - otherwise a failed lookup is indistinguishable from a confirmed-absent unit",
-  );
+  assert.ok(refersTo(okAssign.init[0], "pid"), "o.ok must depend on pid");
+  assert.ok(refersTo(okAssign.init[0], "u"), "o.ok must depend on u, the result of that same coherent lookup - not only on pid");
 });
 
 test("verify gets the action's verifyArgs; they are not shown to the caller", async () => {

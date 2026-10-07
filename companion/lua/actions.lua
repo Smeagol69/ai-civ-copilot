@@ -523,25 +523,28 @@ function A.unit_command(P)
   return { ok = true, requested = true, before = before, verifyArgs = verifyArgs }
 end
 function A.verify_unit_command(P)
-  local u = uiUnit(P)
-  local after = unitState(u)
-  local o = { before = P.before, after = after }
   if P.command == 'UNITCOMMAND_DELETE' then
-    -- Checked first, before any other command-specific branch below: a
-    -- request can carry leftover or mismatched metadata (e.g. a
-    -- promotionIndex attached alongside a DELETE), and none of it may ever
-    -- substitute for actually confirming deletion. u already collapses two
-    -- different situations into the same nil - "the requesting player
-    -- became unavailable" (checkPlayer failed: PlayerManager.IsValid
-    -- returned false or threw) and "the player is valid but the unit was
-    -- authoritatively not found" - so re-check the player directly here.
-    -- unitChanged's OR across exists/x/y/moves/damage/activity would also
-    -- wrongly confirm a delete from the surviving unit's unrelated change;
-    -- only a successful lookup that finds no unit confirms one.
+    -- Checked first, before any generic lookup below: a request can carry
+    -- leftover or mismatched metadata (e.g. a promotionIndex attached
+    -- alongside a DELETE), and none of it may ever substitute for actually
+    -- confirming deletion. pid and u must come from this ONE checkPlayer
+    -- call: uiUnit(P) does its own internal checkPlayer, and pairing a u
+    -- computed there with a pid from a SEPARATE, later checkPlayer call
+    -- would let a transient failure (PlayerManager.IsValid false or
+    -- throwing) that recovers by the second call read as "GetUnit ran and
+    -- found nothing", when GetUnit was never actually called with a valid
+    -- pid. unitChanged's OR across exists/x/y/moves/damage/activity would
+    -- also wrongly confirm a delete from the surviving unit's unrelated
+    -- change; only this one coherent lookup, finding no unit, confirms one.
     local pid = checkPlayer(P)
+    local u = pid and UnitManager.GetUnit(pid, P.unitId)
+    local o = { before = P.before, after = unitState(u) }
     o.ok = pid ~= nil and u == nil
     return o
   end
+  local u = uiUnit(P)
+  local after = unitState(u)
+  local o = { before = P.before, after = after }
   if P.promotionIndex ~= nil then
     o.ok = u ~= nil and u:GetExperience():HasPromotion(P.promotionIndex) == true
     return o
