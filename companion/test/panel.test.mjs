@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { HANDLERS, AI_PROMPTS, handlePanelRequest, formatAction, abilityButtons } from "../lib/panel.mjs";
+import { HANDLERS, AI_PROMPTS, handlePanelRequest, formatAction, abilityButtons, formatProduction } from "../lib/panel.mjs";
 import { Game } from "../lib/game.mjs";
 import { Memory } from "../lib/memory.mjs";
 import { ACTIONS, ACTION_QUERIES, validateAction } from "../lib/actions.mjs";
@@ -67,6 +67,13 @@ test("instant info buttons answer from the snapshot without touching the game", 
   assert.match((await handlePanelRequest(ctx, { key: "production" })).text, /Antium: IDLE/);
   assert.match((await handlePanelRequest(ctx, { key: "turnbrief" })).text, /Idle cities: Antium/);
   assert.match((await handlePanelRequest(ctx, { key: "researchqueue" })).text, /then Banking/);
+});
+
+test("formatProduction shows UNKNOWN for a city whose production could not be read, not IDLE", () => {
+  const snap = { ...SNAP, cities: [{ ...SNAP.cities[0], id: 999, name: "Lostcity", production: undefined }] };
+  const text = formatProduction(snap);
+  assert.match(text, /Lostcity: UNKNOWN/);
+  assert.doesNotMatch(text, /Lostcity: IDLE/);
 });
 
 test("every action button sends a typed action that passes validation", async () => {

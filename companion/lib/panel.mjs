@@ -46,7 +46,7 @@ export function formatOverview(snap) {
 
 export function formatProduction(snap) {
   const p = solve.productionOverview(snap);
-  const lines = p.cities.map((c) => `- ${c.name}: ${c.building ? `${pretty(c.building)} (${c.turnsLeft} turns)` : "IDLE"}, pop ${c.population}, prod ${c.production}`);
+  const lines = p.cities.map((c) => `- ${c.name}: ${c.productionUnknown ? "UNKNOWN" : c.building ? `${pretty(c.building)} (${c.turnsLeft} turns)` : "IDLE"}, pop ${c.population}, prod ${c.production}`);
   if (p.idle.length) lines.push(`Idle: ${p.idle.join(", ")}`);
   if (p.housingCapped.length) lines.push(`Out of housing: ${p.housingCapped.join(", ")}`);
   if (p.unhappy.length) lines.push(`Short of amenities: ${p.unhappy.join(", ")}`);

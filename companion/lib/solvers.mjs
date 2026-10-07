@@ -44,20 +44,29 @@ export function empireSummary(snap) {
 }
 
 export function productionOverview(snap) {
-  const rows = (snap.cities || []).map((c) => ({
-    cityId: c.id,
-    name: c.name,
-    population: c.population,
-    production: round(c.yields?.PRODUCTION),
-    building: c.production?.item || null,
-    turnsLeft: c.production?.turnsLeft ?? null,
-    queueSize: c.production?.queueSize ?? 0,
-    turnsToGrow: c.turnsToGrow,
-    housingRoom: typeof c.housing === "number" ? round(c.housing - c.population) : null,
-    amenityBalance: typeof c.amenities === "number" && typeof c.amenitiesNeeded === "number" ? c.amenities - c.amenitiesNeeded : null,
-  }));
+  const rows = (snap.cities || []).map((c) => {
+    // snapshot.lua's try('city.production', ...) can genuinely fail,
+    // leaving c.production entirely absent - a different situation from a
+    // confirmed-empty queue ({item: null, queueSize: 0}). Collapsing both
+    // into the same building: null, queueSize: 0 would read as "safe to
+    // end the turn" on a city whose real status was never actually read.
+    const known = c.production != null;
+    return {
+      cityId: c.id,
+      name: c.name,
+      population: c.population,
+      production: round(c.yields?.PRODUCTION),
+      building: known ? c.production.item || null : null,
+      turnsLeft: known ? c.production.turnsLeft ?? null : null,
+      queueSize: known ? c.production.queueSize ?? 0 : null,
+      productionUnknown: !known,
+      turnsToGrow: c.turnsToGrow,
+      housingRoom: typeof c.housing === "number" ? round(c.housing - c.population) : null,
+      amenityBalance: typeof c.amenities === "number" && typeof c.amenitiesNeeded === "number" ? c.amenities - c.amenitiesNeeded : null,
+    };
+  });
   return {
-    idle: rows.filter((r) => !r.building).map((r) => r.name),
+    idle: rows.filter((r) => !r.productionUnknown && !r.building).map((r) => r.name),
     housingCapped: rows.filter((r) => r.housingRoom !== null && r.housingRoom <= 0).map((r) => r.name),
     unhappy: rows.filter((r) => r.amenityBalance !== null && r.amenityBalance < 0).map((r) => r.name),
     cities: rows,

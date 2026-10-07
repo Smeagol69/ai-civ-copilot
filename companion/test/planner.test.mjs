@@ -9,7 +9,7 @@ const SNAP = {
   players: [{ id: 1, civName: "Mongolia", major: true, atWar: false }],
   cities: [
     { id: 1, name: "Krakow", x: 13, y: 14, population: 3, production: { item: "UNIT_SLINGER", turnsLeft: 2 }, housing: 6, amenities: 1, amenitiesNeeded: 1 },
-    { id: 2, name: "Gdansk", x: 18, y: 12, population: 1, production: null, housing: 4, amenities: 1, amenitiesNeeded: 0 },
+    { id: 2, name: "Gdansk", x: 18, y: 12, population: 1, production: { item: null, queueSize: 0 }, housing: 4, amenities: 1, amenitiesNeeded: 0 },
   ],
   units: [
     { id: 10, type: "UNIT_SETTLER", x: 15, y: 13, moves: 2, combat: 0, ranged: 0, ready: true },

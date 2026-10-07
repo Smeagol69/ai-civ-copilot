@@ -19,6 +19,23 @@ test("production overview flags idle, capped and unhappy cities", () => {
   assert.deepEqual(p.unhappy, ["Rome"]);
 });
 
+test("an unread production field stays unknown, never becomes idle with an invented empty queue", () => {
+  // snapshot.lua's try('city.production', ...) can genuinely fail, leaving
+  // c.production entirely absent - a different situation from Antium's
+  // confirmed-empty {item: null, queueSize: 0}. Collapsing both into the
+  // same building: null, queueSize: 0 shape would tell the planner it's
+  // safe to end the turn on a city whose real status was never read.
+  const snap = { ...SNAP, cities: [...SNAP.cities, { ...SNAP.cities[0], id: 999, name: "Lostcity", production: undefined }] };
+  const p = solve.productionOverview(snap);
+  const row = p.cities.find((c) => c.name === "Lostcity");
+  assert.ok(row.productionUnknown, "an entirely unread production field must be flagged unknown");
+  assert.equal(row.building, null);
+  assert.equal(row.queueSize, null, "queueSize must not invent a confirmed zero for a field that was never read");
+  assert.ok(!p.idle.includes("Lostcity"), "an unknown production status must never be reported as idle");
+  // The confirmed-empty case must keep working exactly as before.
+  assert.ok(!p.cities.find((c) => c.name === "Antium").productionUnknown);
+});
+
 test("threat report ranks hostile units first and skips civilians", () => {
   const t = solve.threatReport(SNAP);
   assert.equal(t.hostileCount, 2);
