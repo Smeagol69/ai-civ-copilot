@@ -63,8 +63,25 @@ local function checkOther(P)
   return pid, P.otherId
 end
 
+local function isFiniteInteger(n)
+  return type(n) == 'number' and n > -math.huge and n < math.huge and n == math.floor(n)
+end
+
 local function plotAt(P)
-  if type(P.x) ~= 'number' or type(P.y) ~= 'number' then return nil, fail('x and y are required') end
+  if not isFiniteInteger(P.x) or not isFiniteInteger(P.y) then
+    return nil, fail('x and y must be finite whole map coordinates')
+  end
+  -- Same zero-argument, two-return shape as plots.lua / snapshot.lua.
+  -- Native GetPlot does not promise to bounds-check: unknown dimensions
+  -- cannot authorize a lookup, and explicit destinations must be on-map.
+  -- Neighbor traversal keeps its existing GetPlotXYWithRangeCheck wrapping.
+  local ok, width, height = pcall(Map.GetGridSize)
+  if not ok or not isFiniteInteger(width) or not isFiniteInteger(height) or width <= 0 or height <= 0 then
+    return nil, fail('map dimensions are unavailable')
+  end
+  if P.x < 0 or P.x >= width or P.y < 0 or P.y >= height then
+    return nil, fail('coordinates are outside the map', { width = width, height = height })
+  end
   local p = Map.GetPlot(P.x, P.y)
   if not p then return nil, fail('no plot at ' .. tostring(P.x) .. ',' .. tostring(P.y)) end
   return p
