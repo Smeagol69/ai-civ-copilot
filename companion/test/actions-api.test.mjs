@@ -149,21 +149,55 @@ test("a non-unit purchase does not manufacture an acquisition from an unreliable
   );
 });
 
-test("countCityDistricts propagates unknown when a district's own type cannot be classified", () => {
-  // `if r and r.DistrictType == districtType then` treats "GetType()
-  // returned nil / an unmapped type / a catalog row missing
-  // DistrictType" identically to "confirmed a different type" - either
-  // way the district contributes nothing to the count. Only a
-  // successfully resolved, NAMED type may be safely ruled out as "not
-  // the target"; an unclassifiable district could be hiding the exact
-  // pre-existing one being counted, undercounting the baseline and
-  // later producing a spurious count increase once its identity becomes
-  // readable.
+test("countCityDistricts and countUnits require a genuinely resolved, non-empty string type name before ruling out a non-match", () => {
+  // `r.DistrictType == nil` (or the equivalent for UnitType) only catches
+  // a MISSING field - a malformed row where the field is false, 0, or ""
+  // passes that check, compares unequal to any real target name, and
+  // reads as "confirmed some other type" even though the identity was
+  // never actually known as a genuine type name. Only a shared, strict
+  // type(name) == 'string' and name ~= '' check closes this the same way
+  // for both helpers, and for any future caller of either.
   const src = loadLua("actions");
   assert.match(
     src,
-    /if kind == nil or not r or r\.DistrictType == nil then return nil end/,
-    "countCityDistricts must return nil (unknown) for a district whose type cannot be resolved, before ever comparing it against the target type",
+    /local function resolvedTypeName\(kind, tbl, key\)/,
+    "a shared helper must centralize what counts as a genuinely resolved identity",
+  );
+  assert.match(
+    src,
+    /if type\(name\) ~= 'string' or name == '' then return nil end/,
+    "a malformed row (UnitType/DistrictType false, 0, or an empty string) must not be read as a confirmed, different type",
+  );
+  assert.match(src, /resolvedTypeName\(d:GetType\(\), 'Districts', 'DistrictType'\)/, "countCityDistricts must resolve each district's identity through the shared helper");
+  assert.match(src, /resolvedTypeName\(u:GetType\(\), 'Units', 'UnitType'\)/, "countUnits must resolve each unit's identity through the shared helper");
+});
+
+test("countUnits propagates unknown for a type-filtered count, but still counts everything when no type is given", () => {
+  // Mirrors the district fix: a unit whose own type cannot be resolved
+  // must not be silently excluded from a type-filtered count - that
+  // could hide the exact pre-existing unit being counted. The unfiltered
+  // (unitType == nil) total-count path other callers may rely on must
+  // keep working without needing any per-unit identity resolution at all.
+  const src = loadLua("actions");
+  assert.match(src, /local function countUnits\(pid, unitType\)/);
+  assert.match(src, /if unitType == nil then\s*\n\s*n = n \+ 1/, "counting everything must not require resolving each unit's identity");
+});
+
+test("every countUnits caller handles an unknown count instead of comparing it with a relational operator", () => {
+  // Lua errors when comparing nil with > - countUnits can now return nil
+  // for a type-filtered count, so every caller that compares a before
+  // and after count must check both are non-nil first, or an unknown
+  // identity would crash the game instead of just failing to confirm.
+  const b = actionBodies();
+  assert.match(
+    b.verify_purchase,
+    /o\.unitsNow ~= nil and spent and o\.unitsNow > P\.unitsBefore/,
+    "verify_purchase's unit acquisition check must require a reliable after-read count before comparing it",
+  );
+  assert.match(
+    b.finish_production,
+    /o\.unitsBefore ~= nil and o\.unitsAfter ~= nil and o\.unitsAfter > o\.unitsBefore/,
+    "finish_production must not compare an unknown unit count with a relational operator",
   );
 });
 

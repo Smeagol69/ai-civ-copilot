@@ -112,36 +112,56 @@ local function unitChanged(b, a)
   return b.x ~= a.x or b.y ~= a.y or b.moves ~= a.moves or b.damage ~= a.damage or b.activity ~= a.activity
 end
 
+-- A reliable, named type string for a game object via its database row -
+-- or nil if any step is not confidently resolved: the live type/hash
+-- itself, the catalog row, or a genuine non-empty string name. A
+-- malformed row (UnitType/DistrictType false, 0, or "") would otherwise
+-- compare unequal to any real target name and read as "confirmed some
+-- other type", when the identity was never actually known.
+local function resolvedTypeName(kind, tbl, key)
+  if kind == nil then return nil end
+  local r = GameInfo[tbl][kind]
+  if not r then return nil end
+  local name = r[key]
+  if type(name) ~= 'string' or name == '' then return nil end
+  return name
+end
+
+-- unitType == nil counts every unit, with no identity resolution needed
+-- (callers that just want a total, like production's own count, still
+-- work even if some unit's type cannot be resolved). A specific unitType
+-- requires each unit's identity to resolve through resolvedTypeName -
+-- one that cannot be resolved makes the whole count unknown (nil),
+-- rather than silently excluding it, the same way countCityDistricts
+-- below does for an unclassifiable district: either could be hiding the
+-- exact pre-existing unit being counted.
 local function countUnits(pid, unitType)
   local n = 0
   for _, u in Players[pid]:GetUnits():Members() do
-    local r = GameInfo.Units[u:GetType()]
-    if unitType == nil or (r and r.UnitType == unitType) then n = n + 1 end
+    if unitType == nil then
+      n = n + 1
+    else
+      local name = resolvedTypeName(u:GetType(), 'Units', 'UnitType')
+      if name == nil then return nil end
+      if name == unitType then n = n + 1 end
+    end
   end
   return n
 end
 
 -- Mirrors countUnits, for verifying a district purchase/build the same
 -- way: a district that is not yet complete has not actually been
--- acquired. Returns nil (unknown) instead of guessing a count if:
---   - any district's own type cannot be resolved (GetType() nil, an
---     unmapped type, or a catalog row missing DistrictType) - only a
---     successfully resolved, NAMED type may be safely ruled out as "not
---     the target"; an unclassifiable district could be hiding the exact
---     pre-existing one being counted, which `if r and r.DistrictType ==
---     districtType` would otherwise treat identically to a confirmed
---     non-match (neither contributes to the count either way).
---   - a matching district's completion read is not a reliable boolean -
---     Lua treats any non-nil/non-false value (0, "", a string) as
---     truthy, so a bare `if d:IsComplete() then` would silently
---     miscount an unreliable read as complete.
+-- acquired. Returns nil (unknown) instead of guessing a count if a
+-- matching district's completion read is not a reliable boolean - Lua
+-- treats any non-nil/non-false value (0, "", a string) as truthy, so a
+-- bare `if d:IsComplete() then` would silently miscount an unreliable
+-- read as complete.
 local function countCityDistricts(c, districtType)
   local n = 0
   for _, d in c:GetDistricts():Members() do
-    local kind = d:GetType()
-    local r = kind ~= nil and GameInfo.Districts[kind]
-    if kind == nil or not r or r.DistrictType == nil then return nil end
-    if r.DistrictType == districtType then
+    local name = resolvedTypeName(d:GetType(), 'Districts', 'DistrictType')
+    if name == nil then return nil end
+    if name == districtType then
       local complete = d:IsComplete()
       if complete ~= true and complete ~= false then return nil end
       if complete then n = n + 1 end
@@ -280,7 +300,7 @@ function A.verify_purchase(P)
   if P.yield == 'YIELD_FAITH' then spent = faith < (P.faithBefore or faith) else spent = gold < (P.goldBefore or gold) end
   if P.unitsBefore ~= nil then
     o.unitsNow = countUnits(me, P.item)
-    o.ok = spent and o.unitsNow > P.unitsBefore
+    o.ok = o.unitsNow ~= nil and spent and o.unitsNow > P.unitsBefore
   elseif P.hadBuildingBefore ~= nil then
     local row = resolveItem(P.item)
     local c = uiCity(P)
@@ -727,7 +747,9 @@ function A.finish_production(P)
   local o = { before = before, after = after }
   if t and t.tbl == 'Units' then
     o.unitsBefore, o.unitsAfter = unitsBefore, countUnits(pid, before)
-    o.ok = o.unitsAfter > unitsBefore
+    -- Lua errors comparing nil with > - countUnits can return nil for an
+    -- unresolvable identity, so this must check both are known first.
+    o.ok = o.unitsBefore ~= nil and o.unitsAfter ~= nil and o.unitsAfter > o.unitsBefore
   elseif t and t.tbl == 'Buildings' then
     o.ok = c:GetBuildings():HasBuilding(row.Index) == true
   else
