@@ -87,6 +87,118 @@ function maskLuaLiterals(source) {
   return code.join("");
 }
 
+// Executable fields in the installed FireTuner PanelData format. Labels,
+// attributes, unknown elements and fields in other locations are not scripts.
+const PANEL_LUA_PATHS = new Set([
+  "PanelData/EnterAction", "PanelData/ExitAction", "PanelData/Actions/ActionData/Action",
+  ...["Boolean", "Float", "Integer", "String"].flatMap((type) =>
+    ["GetFunction", "SetFunction"].map((field) => `PanelData/${type}Controls/${type}ControlData/${field}`)),
+  ...["OnDeselected", "OnSelected", "PopulateList"].map((field) => `PanelData/MultiselectLists/MultiselectListData/${field}`),
+  ...["OnSelection", "PopulateList"].map((field) => `PanelData/SelectionLists/SelectionListData/${field}`),
+  ...["OnSelection", "PopulateTree"].map((field) => `PanelData/TreeViews/TreeViewData/${field}`),
+]);
+
+// Decode XML text once, retaining each character's original source position.
+// CDATA is literal; XML line-end normalization also applies inside CDATA.
+function panelText(text, start, cdata = false) {
+  const chars = [], positions = [];
+  const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+  for (let i = 0; i < text.length;) {
+    const at = i;
+    let value = text[i++];
+    if (value === "\r") {
+      if (text[i] === "\n") i++;
+      value = "\n";
+    } else if (!cdata && value === "&") {
+      const entity = /^&(#x[0-9a-fA-F]+|#[0-9]+|[a-z]+);/.exec(text.slice(at));
+      if (!entity) return null;
+      value = Object.hasOwn(named, entity[1]) ? named[entity[1]] : undefined;
+      if (entity[1].startsWith("#")) {
+        const hex = entity[1][1] === "x";
+        const point = Number.parseInt(entity[1].slice(hex ? 2 : 1), hex ? 16 : 10);
+        if ((point < 0x20 && ![9, 10, 13].includes(point)) || point > 0x10ffff ||
+            (point >= 0xd800 && point <= 0xdfff) || point === 0xfffe || point === 0xffff) return null;
+        value = String.fromCodePoint(point);
+      }
+      if (value === undefined) return null;
+      i = at + entity[0].length;
+    }
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/.test(value)) return null;
+    for (const char of value.split("")) {
+      chars.push(char);
+      positions.push(start + at);
+    }
+  }
+  return { text: chars.join(""), positions };
+}
+
+// Plain Lua .ltp files remain supported. XML panels are parsed structurally,
+// without DTD/entity expansion, before any Lua masking. Each field gets fresh
+// lexical state, so a label's apostrophe or a neighboring field cannot hide or
+// manufacture calls. Malformed/unsupported XML contributes no evidence.
+function luaSources(source, panel) {
+  if (!panel || !/^\s*</.test(source)) return [{ text: source }];
+  const sources = [], stack = [];
+  let field = null, rootSeen = false;
+  const append = (text, start, cdata = false) => {
+    if (!cdata && text.includes("]]>")) return false;
+    const decoded = panelText(text, start, cdata);
+    if (!decoded || (!stack.length && !/^[ \t\r\n]*$/.test(text))) return false;
+    if (field) {
+      field.text += decoded.text;
+      field.positions = field.positions.concat(decoded.positions);
+    }
+    return true;
+  };
+  for (let at = source[0] === "\ufeff" ? 1 : 0; at < source.length;) {
+    if (source[at] !== "<") {
+      const end = source.indexOf("<", at);
+      const next = end < 0 ? source.length : end;
+      if (!append(source.slice(at, next), at)) return [];
+      at = next;
+    } else if (source.startsWith("<!--", at)) {
+      const end = source.indexOf("-->", at + 4);
+      if (end < 0 || source.slice(at + 4, end).includes("--") || source[end - 1] === "-") return [];
+      at = end + 3;
+    } else if (source.startsWith("<?", at)) {
+      const end = source.indexOf("?>", at + 2);
+      if (end < 0) return [];
+      at = end + 2;
+    } else if (source.startsWith("<![CDATA[", at)) {
+      const end = source.indexOf("]]>", at + 9);
+      if (!stack.length || end < 0 || !append(source.slice(at + 9, end), at + 9, true)) return [];
+      at = end + 3;
+    } else if (source.startsWith("</", at)) {
+      const tag = /^<\/([A-Za-z_][A-Za-z0-9_.:-]*)[ \t\r\n]*>/.exec(source.slice(at));
+      if (!tag || stack.pop() !== tag[1]) return [];
+      if (field && field.depth === stack.length + 1) {
+        if (!field.nested) sources.push({ text: field.text, positions: field.positions });
+        field = null;
+      }
+      at += tag[0].length;
+    } else {
+      const tag = /^<([A-Za-z_][A-Za-z0-9_.:-]*)(?:[ \t\r\n]+[A-Za-z_][A-Za-z0-9_.:-]*[ \t\r\n]*=[ \t\r\n]*(?:"[^"<]*"|'[^'<]*'))*[ \t\r\n]*\/?>/.exec(source.slice(at));
+      if (!tag) return []; // includes DTD/ENTITY directives: never expand them
+      const attributes = new Set();
+      for (const attr of tag[0].matchAll(/[ \t\r\n]+([A-Za-z_][A-Za-z0-9_.:-]*)[ \t\r\n]*=[ \t\r\n]*(["'])(.*?)\2/gs)) {
+        if (attributes.has(attr[1]) || !panelText(attr[3], 0) || (attr[1] === "xmlns" && attr[3])) return [];
+        attributes.add(attr[1]);
+      }
+      if (!stack.length) {
+        if (rootSeen || tag[1] !== "PanelData") return [];
+        rootSeen = true;
+      }
+      if (field) field.nested = true;
+      if (!tag[0].endsWith("/>")) {
+        stack.push(tag[1]);
+        if (!field && PANEL_LUA_PATHS.has(stack.join("/"))) field = { depth: stack.length, text: "", positions: [], nested: false };
+      }
+      at += tag[0].length;
+    }
+  }
+  return rootSeen && !stack.length ? sources : [];
+}
+
 // One pass over every shipped .lua/.ltp source: method name -> call sites.
 export function indexCallSites(files, { perMethod = 24 } = {}) {
   const index = new Map();
@@ -101,32 +213,35 @@ export function indexCallSites(files, { perMethod = 24 } = {}) {
     const rel = path.relative(files.gameDir, f);
     const ctx = contextOf(rel);
     const lines = files.lines ? files.lines(f) : fs.readFileSync(f, "utf8").split(/\r?\n/);
-    const code = maskLuaLiterals(lines.join("\n"));
-    const declarations = new Set([...code.matchAll(declaration)].map((m) => m.index + m[0].length - 1));
     let i = 0;
     let lineStart = 0;
-    for (const m of code.matchAll(re)) {
-      while (lineStart + lines[i].length < m.index) lineStart += lines[i++].length + 1;
-      const line = lines[i];
-      const open = m.index + m[0].length - 1;
-      if (line.length > 400 || declarations.has(open)) continue;
-      const method = m[3];
-      let e = index.get(method);
-      if (!e) index.set(method, (e = { count: 0, sites: [], contexts: new Set(), zeroArg: false, zeroArgVars: new Set() }));
-      e.count++;
-      e.contexts.add(ctx);
-      // A closing paren after only Lua trivia confirms an empty argument list,
-      // even across lines. An incomplete call or a masked string cannot do so.
-      let next = open + 1;
-      while (next < code.length && /[ \t\v\f\r\n]/.test(code[next])) next++;
-      if (m[2] === ":" && code[next] === ")") {
-        e.zeroArg = true;
-        if (e.zeroArgVars.size < 40) e.zeroArgVars.add(m[1]);
+    for (const script of luaSources(lines.join("\n"), lower.endsWith(".ltp"))) {
+      const code = maskLuaLiterals(script.text);
+      const declarations = new Set([...code.matchAll(declaration)].map((m) => m.index + m[0].length - 1));
+      for (const m of code.matchAll(re)) {
+        const sourceAt = script.positions ? script.positions[m.index] : m.index;
+        while (lineStart + lines[i].length < sourceAt) lineStart += lines[i++].length + 1;
+        const line = lines[i];
+        const open = m.index + m[0].length - 1;
+        if (line.length > 400 || declarations.has(open)) continue;
+        const method = m[3];
+        let e = index.get(method);
+        if (!e) index.set(method, (e = { count: 0, sites: [], contexts: new Set(), zeroArg: false, zeroArgVars: new Set() }));
+        e.count++;
+        e.contexts.add(ctx);
+        // A closing paren after only Lua trivia confirms an empty argument list,
+        // even across lines. An incomplete call or a masked string cannot do so.
+        let next = open + 1;
+        while (next < code.length && /[ \t\v\f\r\n]/.test(code[next])) next++;
+        if (m[2] === ":" && code[next] === ")") {
+          e.zeroArg = true;
+          if (e.zeroArgVars.size < 40) e.zeroArgVars.add(m[1]);
+        }
+        // Keep a spread of examples: one per receiver variable and context,
+        // so a site on the right kind of object is likely to be among them.
+        const site = { v: m[1], file: rel.replace(/\\/g, "/"), line: i + 1, code: line.trim().slice(0, 200), ctx };
+        if (e.sites.length < perMethod && !e.sites.some((x) => x.v === site.v && x.ctx === site.ctx)) e.sites.push(site);
       }
-      // Keep a spread of examples: one per receiver variable and context,
-      // so a site on the right kind of object is likely to be among them.
-      const site = { v: m[1], file: rel.replace(/\\/g, "/"), line: i + 1, code: line.trim().slice(0, 200), ctx };
-      if (e.sites.length < perMethod && !e.sites.some((x) => x.v === site.v && x.ctx === site.ctx)) e.sites.push(site);
     }
   }
   return index;

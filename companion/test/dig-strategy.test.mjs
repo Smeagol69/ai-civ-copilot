@@ -80,6 +80,158 @@ function filesWith(lines) {
   return { gameDir: dir, list: () => [file], lines: (f) => fs.readFileSync(f, "utf8").split("\n") };
 }
 
+function tunerFiles(source, ext = ".ltp") {
+  const dir = tmp();
+  fs.mkdirSync(path.join(dir, "Debug"));
+  const file = path.join(dir, "Debug", `Panel${ext}`);
+  fs.writeFileSync(file, source);
+  return { gameDir: dir, list: () => [file], lines: (f) => fs.readFileSync(f, "utf8").split(/\r?\n/) };
+}
+const panelAction = (lua) => `<PanelData><Actions><ActionData><Action>${lua}</Action></ActionData></Actions></PanelData>`;
+
+test("FireTuner XML metadata, comments and encoded Lua strings never enable getter probes", () => {
+  for (const source of [
+    "<PanelData><Name>plot:GetYield()</Name></PanelData>",
+    "<PanelData><!--\nplot:GetYield()\n--></PanelData>",
+    panelAction("local text = &quot;plot:GetYield()&quot;"),
+    panelAction("local text = &apos;plot:GetYield()&apos;"),
+    '<PanelData label="plot:GetYield()"><Name><![CDATA[plot:GetYield()]]></Name></PanelData>',
+    "<PanelData><Name><Action>plot:GetYield()</Action></Name></PanelData>",
+    "<PanelData><UnknownScript>plot:GetYield()</UnknownScript></PanelData>",
+    '<?panel instruction="<Action>plot:GetYield()</Action>"?><PanelData/>',
+  ]) {
+    const memory = fakeMemory(), files = tunerFiles(source);
+    assert.equal(dig.indexCallSites(files).get("GetYield"), undefined, source);
+    dig.mapApi(memory, files, memory.discovery);
+    const entry = memory.discovery.get("GameCore_Tuner", "Plot", "GetYield");
+    assert.equal(entry.evidence, null);
+    assert.equal(entry.status, "unknown");
+    assert.ok(!dig.probeCandidates(memory.discovery).some((e) => e.method === "GetYield"));
+  }
+  const literal = luaparse.parse('local text = "plot:GetYield()"', { luaVersion: "5.1" });
+  assert.equal(literal.body[0].init[0].type, "StringLiteral", "decoded XML contains data, not a getter call");
+});
+
+test("FireTuner XML preserves each installed executable callback location", () => {
+  // Field paths observed in the installed Debug/*.ltp PanelData documents,
+  // including Forge.ltp's PopulateTree and City.ltp's typed controls.
+  const paths = [
+    ["EnterAction"], ["ExitAction"], ["Actions", "ActionData", "Action"],
+    ["BooleanControls", "BooleanControlData", "GetFunction"], ["BooleanControls", "BooleanControlData", "SetFunction"],
+    ["FloatControls", "FloatControlData", "GetFunction"], ["FloatControls", "FloatControlData", "SetFunction"],
+    ["IntegerControls", "IntegerControlData", "GetFunction"], ["IntegerControls", "IntegerControlData", "SetFunction"],
+    ["StringControls", "StringControlData", "GetFunction"], ["StringControls", "StringControlData", "SetFunction"],
+    ["MultiselectLists", "MultiselectListData", "OnDeselected"], ["MultiselectLists", "MultiselectListData", "OnSelected"],
+    ["MultiselectLists", "MultiselectListData", "PopulateList"],
+    ["SelectionLists", "SelectionListData", "OnSelection"], ["SelectionLists", "SelectionListData", "PopulateList"],
+    ["TreeViews", "TreeViewData", "OnSelection"], ["TreeViews", "TreeViewData", "PopulateTree"],
+  ];
+  const fields = paths.map((tags, i) => tags.reduceRight((body, tag) => `<${tag}>${body}</${tag}>`, `local n = plot${i}:GetYield()`));
+  const files = tunerFiles(`<PanelData>\n${fields.join("\n")}\n</PanelData>`);
+  const entry = dig.indexCallSites(files).get("GetYield");
+  assert.equal(entry.count, 18);
+  assert.equal(entry.zeroArgVars.size, 18);
+  assert.deepEqual(entry.sites.map((s) => s.line), Array.from({ length: 18 }, (_, i) => i + 2));
+  const memory = fakeMemory();
+  dig.mapApi(memory, files, memory.discovery);
+  assert.ok(dig.probeCandidates(memory.discovery).some((e) => e.method === "GetYield"));
+  const writer = tunerFiles('<PanelData><StringControls><StringControlData><SetFunction>function(value) pCity:ChangeLoyalty(value) end</SetFunction></StringControlData></StringControls></PanelData>');
+  dig.mapApi(memory, writer, memory.discovery);
+  assert.ok(dig.frontier(memory.discovery).some((e) => e.method === "ChangeLoyalty"));
+  assert.ok(!dig.probeCandidates(memory.discovery).some((e) => e.method === "ChangeLoyalty"), "XML evidence never makes a writer probeable");
+});
+
+test("FireTuner script fields have independent Lua lexical state", () => {
+  for (const source of [
+    "<PanelData><Name>Matt's panel</Name><EnterAction>plot:GetYield()</EnterAction></PanelData>",
+    "<PanelData><EnterAction>-- comment</EnterAction><ExitAction>plot:GetYield()</ExitAction></PanelData>",
+    "<PanelData><EnterAction>local text = [[</EnterAction><ExitAction>plot:GetYield()</ExitAction></PanelData>",
+  ]) {
+    const entry = dig.indexCallSites(tunerFiles(source)).get("GetYield");
+    assert.equal(entry.count, 1);
+    assert.equal(entry.zeroArg, true, source);
+  }
+  const separate = dig.indexCallSites(tunerFiles("<PanelData><EnterAction>plot:GetYield(</EnterAction><ExitAction>)</ExitAction></PanelData>")).get("GetYield");
+  assert.equal(separate.count, 1);
+  assert.equal(separate.zeroArg, false, "a sibling field cannot finish an argument list");
+});
+
+test("FireTuner CDATA is literal while genuine script calls remain visible", () => {
+  const cases = [
+    ["<![CDATA[plot:GetYield()]]>", 1, true],
+    ['<![CDATA[local text = "&quot;plot:GetYield()&quot;"]]>', 0, false],
+    ['local text = &quot;<![CDATA[plot:GetYield()]]>&quot;', 0, false],
+    ['<![CDATA[local text = "</Action><Action>plot:GetYield()</Action>"; plot:GetYield(1)]]>', 1, false],
+    ['<![CDATA[local text = "<!DOCTYPE PanelData>"; plot:GetYield()]]>', 1, true],
+    ["<![CDATA[-- plot:GetYield()\nplot:GetYield(1)]]>", 1, false],
+  ];
+  for (const [body, count, zero] of cases) {
+    const entry = dig.indexCallSites(tunerFiles(panelAction(body))).get("GetYield");
+    assert.equal(entry?.count || 0, count, body);
+    assert.equal(entry?.zeroArg || false, zero, body);
+  }
+});
+
+test("FireTuner entities decode once and retain original receiver lines", () => {
+  const source = '<PanelData>\r\n<EnterAction>\r\n&#10;p&#108;ot&#58;GetYield(&#32;)\r\n</EnterAction>\r\n</PanelData>';
+  const entry = dig.indexCallSites(tunerFiles(source)).get("GetYield");
+  assert.equal(entry.count, 1);
+  assert.equal(entry.zeroArg, true);
+  assert.equal(entry.sites[0].line, 3, "decoded newlines do not change the original XML receiver line");
+  assert.equal(entry.sites[0].file, "Debug/Panel.ltp");
+  assert.equal(entry.sites[0].code, "&#10;p&#108;ot&#58;GetYield(&#32;)");
+  for (const body of ["plot:GetYield(&#34;&#34;)", "plot:GetYield(&apos;&apos;)", "plot:GetYield(&amp;quot;)"]) {
+    const call = dig.indexCallSites(tunerFiles(panelAction(body))).get("GetYield");
+    assert.equal(call.count, 1);
+    assert.equal(call.zeroArg, false, body);
+  }
+  assert.equal(dig.indexCallSites(tunerFiles(panelAction("&#45;&#45; plot:GetYield()"))).get("GetYield"), undefined);
+});
+
+test("FireTuner malformed or unsupported XML stays unconfirmed", () => {
+  for (const source of [
+    '<!DOCTYPE PanelData [<!ENTITY fake "plot:GetYield()">]><PanelData><EnterAction>&fake;</EnterAction></PanelData>',
+    '<!DOCTYPE PanelData SYSTEM "https://example.invalid/panel.dtd"><PanelData><EnterAction>plot:GetYield()</EnterAction></PanelData>',
+    "<PanelData><EnterAction>plot:GetYield()</ExitAction></PanelData>",
+    "<PanelData><EnterAction>plot:GetYield()</EnterAction>",
+    "<UnknownPanel><EnterAction>plot:GetYield()</EnterAction></UnknownPanel>",
+    "<PanelData><EnterAction><Unknown>plot:GetYield()</Unknown></EnterAction></PanelData>",
+    '<PanelData flag="x" flag="y"><EnterAction>plot:GetYield()</EnterAction></PanelData>',
+    '<PanelData xmlns="urn:unknown"><EnterAction>plot:GetYield()</EnterAction></PanelData>',
+    "<PanelData\f><EnterAction>plot:GetYield()</EnterAction></PanelData>",
+    '<PanelData flag="&constructor;"><EnterAction>plot:GetYield()</EnterAction></PanelData>',
+    "<PanelData><EnterAction>plot:GetYield()</EnterAction><Name>&constructor;</Name></PanelData>",
+    panelAction("plot:GetYield(&unsupported;)"),
+    panelAction("plot:GetYield(&#11;)"),
+    panelAction("plot:GetYield(&#xD800;)"),
+    panelAction("plot:GetYield(&#1114112;)"),
+    panelAction("plot:GetYield(&#X20;)"),
+    "<PanelData><EnterAction><![CDATA[plot:GetYield()</EnterAction></PanelData>",
+  ]) assert.equal(dig.indexCallSites(tunerFiles(source)).get("GetYield"), undefined, source);
+});
+
+test("Plain Lua LTP and Lua scripts retain getter and writer evidence", () => {
+  const source = '-- Lua comment with <PanelData> text\nlocal label = "<Action>plot:GetYield()</Action>"\nplot:GetYield()\npCity:ChangeLoyalty(10)\npCityBuildQueue:AddProgress(20)';
+  luaparse.parse(source, { luaVersion: "5.1" });
+  for (const ext of [".ltp", ".lua"]) {
+    const files = tunerFiles(source, ext), memory = fakeMemory();
+    assert.equal(dig.indexCallSites(files).get("GetYield").count, 1);
+    dig.mapApi(memory, files, memory.discovery);
+    assert.ok(dig.probeCandidates(memory.discovery).some((e) => e.method === "GetYield"));
+    assert.ok(dig.frontier(memory.discovery).some((e) => e.method === "ChangeLoyalty"));
+    assert.equal(memory.discovery.get("GameCore_Tuner", "City:GetBuildQueue", "AddProgress").evidence.count, 1);
+  }
+});
+
+test("FireTuner large script fields retain call evidence and source lines", () => {
+  const source = `<PanelData>\n<EnterAction>\n${Array(14000).fill("-- comment").join("\n")}\nplot:GetYield()\n</EnterAction>\n</PanelData>`;
+  assert.ok(source.length > 154000);
+  const entry = dig.indexCallSites(tunerFiles(source)).get("GetYield");
+  assert.equal(entry.count, 1);
+  assert.equal(entry.zeroArg, true);
+  assert.equal(entry.sites[0].line, 14003);
+});
+
 const declarationTrivia = [
   "function ns . plot:GetYield() end",
   "function ns --[[gap]] . plot:GetYield() end",
