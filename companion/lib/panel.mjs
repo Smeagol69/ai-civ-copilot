@@ -64,6 +64,7 @@ export function formatProduction(snap) {
             : "IDLE";
   const lines = p.cities.map((c) => `- ${c.name}: ${status(c)}, pop ${c.population}, prod ${c.production}`);
   if (p.idle.length) lines.push(`Idle: ${p.idle.join(", ")}`);
+  if (p.unknown.length) lines.push(`Unknown: ${p.unknown.join(", ")}`);
   if (p.housingCapped.length) lines.push(`Out of housing: ${p.housingCapped.join(", ")}`);
   if (p.unhappy.length) lines.push(`Short of amenities: ${p.unhappy.join(", ")}`);
   return lines.join("\n") || "No cities.";
@@ -103,6 +104,7 @@ export function formatTurnBrief(snap) {
   else if (s.researching.turns <= 1) lines.push(`Research: ${pretty(s.researching.type)} finishes this turn.`);
   if (!s.civic) lines.push("! No civic in progress.");
   if (p.idle.length) lines.push(`! Idle cities: ${p.idle.join(", ")}.`);
+  if (p.unknown.length) lines.push(`! Unknown production: ${p.unknown.join(", ")}.`);
   if (p.housingCapped.length) lines.push(`Housing full: ${p.housingCapped.join(", ")}.`);
   if (p.unhappy.length) lines.push(`Short of amenities: ${p.unhappy.join(", ")}.`);
   if (t.hostileCount) lines.push(`! ${t.hostileCount} hostile unit(s) in sight.`);

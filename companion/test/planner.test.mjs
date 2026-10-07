@@ -57,3 +57,26 @@ test("a failed read is named, not fatal", async () => {
   assert.match(plan.text, /Could not read: advisor down/);
   assert.match(plan.text, /Deal from Mongolia/);
 });
+
+test("a city whose production could not be read gets a task, and withholds the all-clear", async () => {
+  // Otherwise quiet turn: active research/civic, no units/deals/wars/
+  // blocker, one city whose whole production read failed. Nothing else
+  // should produce a todo/urgent item, so this isolates the signal.
+  const quietGame = {
+    situation: async () => ({ turn: 20, wars: [], deals: [] }),
+    advisor: async () => ({ techs: [], civics: [], cities: [], settle: [], builders: [] }),
+    planning: async () => ({ boosts: { techs: [], civics: [] }, greatPeople: [], envoys: { toGive: 0 } }),
+  };
+  const quietSnap = {
+    meta: { turn: 20, wrapX: false, mapWidth: 60 },
+    me: { id: 0, civName: "Poland", goldPerTurn: 5, researching: { type: "TECH_PRINTING", turns: 4 }, civic: { type: "CIVIC_HUMANISM", turns: 3 } },
+    players: [],
+    cities: [{ id: 5, name: "Lublin", x: 1, y: 1, population: 2, production: undefined, housing: 4, amenities: 1, amenitiesNeeded: 1 }],
+    units: [],
+    visibleForeignUnits: [],
+    gaps: ["city.production: lookup failed"],
+  };
+  const plan = await planTurn(quietGame, quietSnap);
+  assert.match(plan.text, /Lublin.*production.*could not be/i);
+  assert.doesNotMatch(plan.text, /Nothing needs you right now - end the turn\./, "an unknown production status must withhold the all-clear");
+});

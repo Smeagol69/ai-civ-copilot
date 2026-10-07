@@ -75,6 +75,13 @@ export function productionOverview(snap) {
     // an unresolved item name - a nonzero queueSize proves something is
     // building even when its specific name could not be looked up.
     idle: rows.filter((r) => !r.building && r.queueSize === 0).map((r) => r.name),
+    // Unknown is idle's complement on the "no resolved name" side: no
+    // building AND no confirmed queueSize at all (covers both a fully
+    // unread production object and one present but with neither the
+    // item nor the count resolved) - callers must not let this silently
+    // read as "nothing to do" the way an actually-confirmed-empty queue
+    // does.
+    unknown: rows.filter((r) => !r.building && r.queueSize == null).map((r) => r.name),
     housingCapped: rows.filter((r) => r.housingRoom !== null && r.housingRoom <= 0).map((r) => r.name),
     unhappy: rows.filter((r) => r.amenityBalance !== null && r.amenityBalance < 0).map((r) => r.name),
     cities: rows,

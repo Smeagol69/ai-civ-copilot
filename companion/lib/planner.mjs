@@ -81,6 +81,11 @@ export async function planTurn(game, snap) {
     const rec = (advisor.cities || []).find((c) => c.name === name)?.recommended?.[0];
     todo.push(`${name} is idle: the game suggests ${rec ? rec.name : "anything"}.`);
   }
+  // A city whose production status could not be confirmed is not known
+  // to be idle - but it is not known to be busy either. Without this,
+  // nothing stops the plan from falling through to "end the turn" on a
+  // city whose real status is simply unread.
+  for (const name of prod.unknown) todo.push(`${name}'s production could not be read: check it directly before ending the turn.`);
   if (prod.housingCapped.length) tips.push(`Out of housing: ${prod.housingCapped.join(", ")} (build a Granary, farms, or a water source).`);
   if (prod.unhappy.length) tips.push(`Short of amenities: ${prod.unhappy.join(", ")} (luxuries, entertainment, policies).`);
 

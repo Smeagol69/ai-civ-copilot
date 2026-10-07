@@ -50,6 +50,24 @@ test("a nonempty queue with an unresolved item name is not reported idle", () =>
   assert.ok(!p.idle.includes("Unnamedville"), "a confirmed nonempty queue must never be reported idle, even with an unresolved item name");
 });
 
+test("productionOverview surfaces a city name whenever its status could not be confirmed, distinct from idle", () => {
+  const snap = {
+    ...SNAP,
+    cities: [
+      ...SNAP.cities,
+      { ...SNAP.cities[0], id: 999, name: "Lostcity", production: undefined },
+      { ...SNAP.cities[0], id: 997, name: "Testcity", production: { turnsLeft: 3 } },
+      { ...SNAP.cities[0], id: 998, name: "Unnamedville", production: { turnsLeft: 3, queueSize: 1 } },
+    ],
+  };
+  const p = solve.productionOverview(snap);
+  assert.deepEqual(new Set(p.unknown), new Set(["Lostcity", "Testcity"]), "only a city with no resolved name AND no resolved count counts as unknown");
+  assert.ok(!p.unknown.includes("Unnamedville"), "a confirmed nonempty queue is not unknown, even with an unresolved item name");
+  assert.ok(!p.unknown.includes("Antium"), "a confirmed empty queue is not unknown");
+  assert.ok(!p.unknown.includes("Rome"), "a named active production is not unknown");
+  assert.ok(!p.idle.some((name) => p.unknown.includes(name)), "idle and unknown are mutually exclusive");
+});
+
 test("threat report ranks hostile units first and skips civilians", () => {
   const t = solve.threatReport(SNAP);
   assert.equal(t.hostileCount, 2);

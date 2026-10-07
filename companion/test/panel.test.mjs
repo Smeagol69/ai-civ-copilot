@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { HANDLERS, AI_PROMPTS, handlePanelRequest, formatAction, abilityButtons, formatProduction } from "../lib/panel.mjs";
+import { HANDLERS, AI_PROMPTS, handlePanelRequest, formatAction, abilityButtons, formatProduction, formatTurnBrief } from "../lib/panel.mjs";
 import { Game } from "../lib/game.mjs";
 import { Memory } from "../lib/memory.mjs";
 import { ACTIONS, ACTION_QUERIES, validateAction } from "../lib/actions.mjs";
@@ -102,6 +102,27 @@ test("formatProduction still shows a known item name even when its own queueSize
   const snap = { ...SNAP, cities: [{ ...SNAP.cities[0], id: 996, name: "Namedville", production: { item: "UNIT_WARRIOR", turnsLeft: 2 } }] };
   const text = formatProduction(snap);
   assert.match(text, /Namedville: Warrior \(2 turns\)/);
+});
+
+test("formatProduction and formatTurnBrief surface a city whose production status could not be confirmed", () => {
+  const snap = { ...SNAP, cities: [...SNAP.cities, { ...SNAP.cities[0], id: 999, name: "Lostcity", production: undefined }] };
+  const production = formatProduction(snap);
+  assert.match(production, /Unknown: Lostcity/);
+  const brief = formatTurnBrief(snap);
+  assert.match(brief, /Unknown production: Lostcity/);
+});
+
+test("formatTurnBrief does not say 'Nothing urgent' while a city's production status is unknown", () => {
+  const quietSnap = {
+    meta: { turn: 20 },
+    me: { id: 0, civName: "Poland", goldPerTurn: 5, researching: { type: "TECH_PRINTING", turns: 4 }, civic: { type: "CIVIC_HUMANISM", turns: 3 } },
+    cities: [{ id: 5, name: "Lublin", x: 1, y: 1, population: 2, production: undefined, housing: 4, amenities: 1, amenitiesNeeded: 1 }],
+    units: [],
+    visibleForeignUnits: [],
+  };
+  const brief = formatTurnBrief(quietSnap);
+  assert.doesNotMatch(brief, /Nothing urgent\./);
+  assert.match(brief, /Unknown production: Lublin/);
 });
 
 test("every action button sends a typed action that passes validation", async () => {
