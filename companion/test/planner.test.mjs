@@ -110,3 +110,46 @@ test("the engine's own no-blocker enum name permits a quiet end-turn, not a fals
   assert.doesNotMatch(plan.text, /waiting on/i, "NO_ENDTURN_BLOCKING is a truthy string, but it means there is no blocker");
   assert.match(plan.text, /Nothing needs you right now - end the turn\./);
 });
+
+// advisor.lua genuinely emits a builder entry with an empty, missing or
+// null recommended list whenever the builder is outside a city's borders,
+// has no improvement recommendations, or its own lookup fails.
+test("a ready builder with no advisor recommendation still gets a task via the ordinary fallback", async () => {
+  for (const recommended of [[], undefined, null]) {
+    const game = {
+      situation: async () => ({ turn: 20, wars: [], deals: [] }),
+      advisor: async () => ({ techs: [], civics: [], cities: [], settle: [], builders: [{ id: 77, x: 4, y: 5, recommended }] }),
+      planning: async () => ({ boosts: { techs: [], civics: [] }, greatPeople: [], envoys: { toGive: 0 } }),
+    };
+    const snap = {
+      meta: { turn: 20, wrapX: false, mapWidth: 60 },
+      me: { id: 0, civName: "Poland", goldPerTurn: 5, researching: { type: "TECH_PRINTING", turns: 4 }, civic: { type: "CIVIC_HUMANISM", turns: 3 } },
+      players: [],
+      cities: [],
+      units: [{ id: 77, type: "UNIT_BUILDER", x: 4, y: 5, ready: true }],
+      visibleForeignUnits: [],
+    };
+    const plan = await planTurn(game, snap);
+    assert.match(plan.text, /waiting for orders: Builder \(4,5\)/, JSON.stringify(recommended));
+    assert.doesNotMatch(plan.text, /Nothing needs you right now - end the turn\./, JSON.stringify(recommended));
+  }
+});
+
+test("a builder with a real recommendation still gets exactly one specific task, not a duplicate generic one", async () => {
+  const game = {
+    situation: async () => ({ turn: 20, wars: [], deals: [] }),
+    advisor: async () => ({ techs: [], civics: [], cities: [], settle: [], builders: [{ id: 78, x: 6, y: 7, recommended: [{ type: "IMPROVEMENT_FARM", name: "Farm", x: 6, y: 8 }] }] }),
+    planning: async () => ({ boosts: { techs: [], civics: [] }, greatPeople: [], envoys: { toGive: 0 } }),
+  };
+  const snap = {
+    meta: { turn: 20, wrapX: false, mapWidth: 60 },
+    me: { id: 0, civName: "Poland", goldPerTurn: 5, researching: { type: "TECH_PRINTING", turns: 4 }, civic: { type: "CIVIC_HUMANISM", turns: 3 } },
+    players: [],
+    cities: [],
+    units: [{ id: 78, type: "UNIT_BUILDER", x: 6, y: 7, ready: true }],
+    visibleForeignUnits: [],
+  };
+  const plan = await planTurn(game, snap);
+  assert.match(plan.text, /Builder at \(6,7\): Farm at \(6,8\)\./);
+  assert.doesNotMatch(plan.text, /waiting for orders/);
+});

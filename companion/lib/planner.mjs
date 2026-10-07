@@ -101,12 +101,22 @@ export async function planTurn(game, snap) {
     if (here && here.rank === 1) todo.push(`Settler at (${u.x},${u.y}): settle here - it is the game's #1 site (${here.pros.slice(0, 2).join("; ")}).`);
     else todo.push(`Settler at (${u.x},${u.y}): best site (${ranked[0].x},${ranked[0].y}), ${ranked[0].d} tiles away${ranked[0].pros?.length ? ` - ${ranked[0].pros[0]}` : ""}.`);
   }
+  // advisor.lua genuinely emits a builder entry with an empty, missing or
+  // null recommended list whenever the builder is outside a city's
+  // borders, has no improvement recommendations, or its own lookup
+  // fails - only mark it handled once it actually got a task, so one
+  // without a recommendation still falls through to the ordinary
+  // ready-unit fallback below instead of silently vanishing.
+  const handledBuilders = new Set();
   for (const b of advisor.builders || []) {
     const r = b.recommended?.[0];
-    if (r) todo.push(`Builder at (${b.x},${b.y}): ${r.name} at (${r.x},${r.y}).`);
+    if (r) {
+      todo.push(`Builder at (${b.x},${b.y}): ${r.name} at (${r.x},${r.y}).`);
+      handledBuilders.add(b.id);
+    }
   }
   const idle = solve.findUnits(snap, { idleOnly: true });
-  const handled = new Set([...(snap.units || []).filter((x) => x.type === "UNIT_SETTLER").map((x) => x.id), ...(advisor.builders || []).map((b) => b.id)]);
+  const handled = new Set([...(snap.units || []).filter((x) => x.type === "UNIT_SETTLER").map((x) => x.id), ...handledBuilders]);
   const others = idle.units.filter((u) => !handled.has(u.id));
   if (others.length) todo.push(`${others.length} other unit(s) waiting for orders: ${others.slice(0, 5).map((u) => `${pretty(u.type)} (${u.x},${u.y})`).join(", ")}.`);
 
