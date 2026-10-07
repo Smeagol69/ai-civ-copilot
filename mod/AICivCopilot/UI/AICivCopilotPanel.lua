@@ -26,12 +26,17 @@ local PER_ROW = 4;
 
 ExposedMembers.AICivCopilot = ExposedMembers.AICivCopilot or {};
 local Mailbox = ExposedMembers.AICivCopilot;
-Mailbox.outbox = Mailbox.outbox or {};
 Mailbox.events = Mailbox.events or {};   -- game events for the bridge (drained by its poll)
 Mailbox.version = 5;
 m_NextId = Mailbox.nextId or 1;
--- Requests the bridge has taken but not finished; a fresh panel (new game or
--- reload) starts clean so the bridge never re-runs another game's requests.
+-- The mailbox outlives a game (ExposedMembers is app-wide), but a request
+-- belongs to the session that queued it. outbox is a request the bridge has
+-- not even seen yet; taken is one it has seen but not finished. Either left
+-- over from a game that just ended would otherwise replay into whatever a
+-- fresh panel (new game or reload) finds selected now - a stale queued click
+-- firing a real edit against the wrong game. Both start clean here, before
+-- the bridge's next poll can ever see them.
+Mailbox.outbox = {};
 Mailbox.taken = {};
 -- Toggles (kept across panel reloads within a session).
 if Mailbox.autoBrief == nil then Mailbox.autoBrief = true; end      -- free turn brief each turn
