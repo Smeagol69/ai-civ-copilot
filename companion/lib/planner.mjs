@@ -117,12 +117,21 @@ export async function planTurn(game, snap) {
   // 7. Economy warnings.
   if ((me.goldPerTurn ?? 0) < 0) tips.push(`Gold per turn is ${me.goldPerTurn}: cut units or buildings, or trade for gold.`);
 
+  // situation.lua resolves the engine's own end-turn-blocking enum to its
+  // NAME string - including the no-blocker case itself, which comes back
+  // as the literal (truthy) string "NO_ENDTURN_BLOCKING". A bare truthy
+  // check would print a false "waiting on" warning on an ordinary quiet
+  // turn, and would let "end the turn" print right alongside a genuine
+  // blocker - a direct contradiction, since the game will not actually
+  // end the turn while one is active.
+  const blocking = situation.blocking && situation.blocking !== "NO_ENDTURN_BLOCKING" ? situation.blocking : null;
+
   const lines = [`Turn ${snap.meta?.turn ?? situation.turn ?? "?"} plan:`];
   if (urgent.length) lines.push("Urgent:", ...urgent.map((x) => `! ${x}`));
   if (todo.length) lines.push("Do this turn:", ...todo.map((x) => `- ${x}`));
   if (tips.length) lines.push("Worth knowing:", ...tips.map((x) => `- ${x}`));
-  if (situation.blocking) lines.push(`The game is waiting on: ${pretty(situation.blocking)}.`);
-  if (!urgent.length && !todo.length) lines.push("Nothing needs you right now - end the turn.");
+  if (blocking) lines.push(`The game is waiting on: ${pretty(blocking)}.`);
+  if (!urgent.length && !todo.length && !blocking) lines.push("Nothing needs you right now - end the turn.");
   const gaps = [situation, advisor, planning].filter((x) => x?.error).map((x) => x.error);
   if (gaps.length) lines.push(`(Could not read: ${gaps.join("; ")})`);
   lines.push("(Built from the game's own numbers - free, no AI.)");

@@ -80,3 +80,33 @@ test("a city whose production could not be read gets a task, and withholds the a
   assert.match(plan.text, /Lublin.*production.*could not be/i);
   assert.doesNotMatch(plan.text, /Nothing needs you right now - end the turn\./, "an unknown production status must withhold the all-clear");
 });
+
+// situation.lua resolves the engine's end-turn-blocking enum to its NAME
+// string, including the no-blocker case itself: NO_ENDTURN_BLOCKING. An
+// otherwise fully quiet turn (confirmed named production, active
+// research/civic, no units/deals/wars) isolates just the blocking signal.
+const quietBlockerGame = (blocking) => ({
+  situation: async () => ({ turn: 20, wars: [], deals: [], blocking }),
+  advisor: async () => ({ techs: [], civics: [], cities: [], settle: [], builders: [] }),
+  planning: async () => ({ boosts: { techs: [], civics: [] }, greatPeople: [], envoys: { toGive: 0 } }),
+});
+const quietBlockerSnap = {
+  meta: { turn: 20, wrapX: false, mapWidth: 60 },
+  me: { id: 0, civName: "Poland", goldPerTurn: 5, researching: { type: "TECH_PRINTING", turns: 4 }, civic: { type: "CIVIC_HUMANISM", turns: 3 } },
+  players: [],
+  cities: [{ id: 5, name: "Lublin", x: 1, y: 1, population: 2, production: { item: "UNIT_WARRIOR", turnsLeft: 2, queueSize: 1 }, housing: 4, amenities: 1, amenitiesNeeded: 1 }],
+  units: [],
+  visibleForeignUnits: [],
+};
+
+test("an active end-turn blocker is shown and suppresses the all-clear, even with nothing else pending", async () => {
+  const plan = await planTurn(quietBlockerGame("ENDTURN_BLOCKING_PANTHEON"), quietBlockerSnap);
+  assert.match(plan.text, /waiting on: Pantheon\./);
+  assert.doesNotMatch(plan.text, /Nothing needs you right now - end the turn\./, "the game will not actually let the turn end while a real blocker is active");
+});
+
+test("the engine's own no-blocker enum name permits a quiet end-turn, not a false 'waiting on' warning", async () => {
+  const plan = await planTurn(quietBlockerGame("NO_ENDTURN_BLOCKING"), quietBlockerSnap);
+  assert.doesNotMatch(plan.text, /waiting on/i, "NO_ENDTURN_BLOCKING is a truthy string, but it means there is no blocker");
+  assert.match(plan.text, /Nothing needs you right now - end the turn\./);
+});
