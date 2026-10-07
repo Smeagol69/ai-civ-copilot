@@ -123,16 +123,25 @@ end
 
 -- Mirrors countUnits, for verifying a district purchase/build the same
 -- way: a district that is not yet complete has not actually been
--- acquired. Returns nil (unknown) instead of guessing a count if any
--- matching district's completion read is not a reliable boolean - Lua
--- treats any non-nil/non-false value (0, "", a string) as truthy, so a
--- bare `if d:IsComplete() then` would silently miscount an unreliable
--- read as complete.
+-- acquired. Returns nil (unknown) instead of guessing a count if:
+--   - any district's own type cannot be resolved (GetType() nil, an
+--     unmapped type, or a catalog row missing DistrictType) - only a
+--     successfully resolved, NAMED type may be safely ruled out as "not
+--     the target"; an unclassifiable district could be hiding the exact
+--     pre-existing one being counted, which `if r and r.DistrictType ==
+--     districtType` would otherwise treat identically to a confirmed
+--     non-match (neither contributes to the count either way).
+--   - a matching district's completion read is not a reliable boolean -
+--     Lua treats any non-nil/non-false value (0, "", a string) as
+--     truthy, so a bare `if d:IsComplete() then` would silently
+--     miscount an unreliable read as complete.
 local function countCityDistricts(c, districtType)
   local n = 0
   for _, d in c:GetDistricts():Members() do
-    local r = GameInfo.Districts[d:GetType()]
-    if r and r.DistrictType == districtType then
+    local kind = d:GetType()
+    local r = kind ~= nil and GameInfo.Districts[kind]
+    if kind == nil or not r or r.DistrictType == nil then return nil end
+    if r.DistrictType == districtType then
       local complete = d:IsComplete()
       if complete ~= true and complete ~= false then return nil end
       if complete then n = n + 1 end

@@ -149,6 +149,24 @@ test("a non-unit purchase does not manufacture an acquisition from an unreliable
   );
 });
 
+test("countCityDistricts propagates unknown when a district's own type cannot be classified", () => {
+  // `if r and r.DistrictType == districtType then` treats "GetType()
+  // returned nil / an unmapped type / a catalog row missing
+  // DistrictType" identically to "confirmed a different type" - either
+  // way the district contributes nothing to the count. Only a
+  // successfully resolved, NAMED type may be safely ruled out as "not
+  // the target"; an unclassifiable district could be hiding the exact
+  // pre-existing one being counted, undercounting the baseline and
+  // later producing a spurious count increase once its identity becomes
+  // readable.
+  const src = loadLua("actions");
+  assert.match(
+    src,
+    /if kind == nil or not r or r\.DistrictType == nil then return nil end/,
+    "countCityDistricts must return nil (unknown) for a district whose type cannot be resolved, before ever comparing it against the target type",
+  );
+});
+
 // A plain substring/regex match can't tell "this text is present" from "this
 // text actually runs and decides the result" - a mutation deleting the
 // DELETE branch's own `return o` would still match any regex built from its
