@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TunerClient, FrameDecoder, encodeFrame, parseOutput, parseStateList, LuaError } from "../lib/tuner.mjs";
-import { startFakeTuner } from "./fixtures/fake-tuner.mjs";
+import { TunerClient, FrameDecoder, encodeFrame, parseOutput, parseStateList, LuaError, STATE_TTL_MS } from "../lib/tuner.mjs";
+import { startFakeTuner, STATES } from "./fixtures/fake-tuner.mjs";
 
 test("frames round-trip, including split and coalesced chunks", () => {
   const a = encodeFrame(3, "CMD:7:print(1)");
@@ -20,6 +20,80 @@ test("print output and state list parse", () => {
     { index: 0, name: "Tuner" },
     { index: 3, name: "GameCore_Tuner" },
   ]);
+});
+
+test("an explicit state refresh rejects silence without reporting cached states as fresh, then retries", async () => {
+  let silent = false;
+  let acquired = 0, released = 0;
+  const lock = { async acquire() { acquired++; }, async release() { released++; } };
+  const fake = await startFakeTuner((ctx) => ctx.emit("ok"), { noisyHandshake: true, silentLsq: () => silent });
+  const t = new TunerClient({ port: fake.port, lock });
+  try {
+    await t.connect();
+    const cached = t.states;
+    const cachedAt = t.statesAt = Date.now() - STATE_TTL_MS - 1;
+    silent = true;
+    let fresh = false;
+    await assert.rejects(t.refreshStates().then((states) => { fresh = true; return states; }),
+      (e) => e instanceof LuaError && e.code === "invalid-state" && /did not answer/.test(e.message));
+    assert.equal(fresh, false, "the caller must not reach its successful-refresh path");
+    assert.equal(t.states, cached, "keep the last observed list as historical data");
+    assert.equal(t.statesAt, cachedAt, "a silent query cannot renew its age");
+    assert.equal(fake.received.filter((f) => f.tag === 3).length, 0, "refresh never sends a CMD");
+    assert.equal(released, acquired, "a failed refresh releases the mutex");
+
+    silent = false;
+    assert.deepEqual(await t.refreshStates(), STATES, "the next real answer is still accepted");
+    assert.ok(t.statesAt > cachedAt);
+    assert.deepEqual(await t.exec("InGame", "emit('ok')"), ["ok"], "the queue still works after a refused refresh");
+    assert.equal(released, acquired);
+  } finally {
+    t.close();
+    await fake.close();
+  }
+});
+
+test("an explicit state refresh accepts a confirmed empty list and later replaces it", async () => {
+  let states = STATES;
+  const fake = await startFakeTuner(() => {}, { states: () => states });
+  const t = new TunerClient({ port: fake.port, lock: false });
+  try {
+    await t.connect();
+    const cachedAt = t.statesAt = Date.now() - STATE_TTL_MS - 1;
+    states = [];
+    assert.deepEqual(await t.refreshStates(), [], "an answered empty list is different from silence");
+    assert.equal(t.stateIndex("InGame"), null, "old state indices are removed");
+    assert.ok(t.statesAt > cachedAt, "a real answer establishes a fresh observation");
+    states = STATES;
+    assert.deepEqual(await t.refreshStates(), STATES);
+    assert.equal(t.stateIndex("InGame"), 7);
+    assert.equal(fake.received.filter((f) => f.tag === 3).length, 0);
+  } finally {
+    t.close();
+    await fake.close();
+  }
+});
+
+test("a connection lost during an explicit state refresh rejects instead of returning cached states", async () => {
+  let drop = false;
+  const fake = await startFakeTuner(() => {}, { silentLsq: () => {
+    if (!drop) return false;
+    fake.dropAll();
+    return true;
+  } });
+  const t = new TunerClient({ port: fake.port, lock: false });
+  try {
+    await t.connect();
+    const cached = t.states, cachedAt = t.statesAt;
+    drop = true;
+    await assert.rejects(t.refreshStates(), (e) => e instanceof LuaError && e.code === "lost");
+    assert.equal(t.connected, false);
+    assert.equal(t.states, cached);
+    assert.equal(t.statesAt, cachedAt);
+  } finally {
+    t.close();
+    await fake.close();
+  }
 });
 
 test("exec collects only this call's lines and ignores print noise", async () => {

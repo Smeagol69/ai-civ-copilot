@@ -430,11 +430,11 @@ export class TunerClient extends EventEmitter {
     this.inbox = [];
     this.#send(TAG_HANDSHAKE, "LSQ:");
     const r = await this.#reply(5000);
-    // No reply keeps what we knew; a real reply replaces it.
-    if (r) {
-      this.states = parseStateList(r.payload);
-      this.statesAt = Date.now();
-    }
+    // Keep the last observation on silence, without reporting it as the
+    // result of this query. An answered empty list is still a real result.
+    if (!r) return null;
+    this.states = parseStateList(r.payload);
+    this.statesAt = Date.now();
     return this.states;
   }
 
@@ -453,7 +453,17 @@ export class TunerClient extends EventEmitter {
   }
 
   async refreshStates() {
-    return this.#serial(() => this.#locked(() => this.#lsq()));
+    return this.#serial(() => this.#locked(async () => {
+      const states = await this.#lsq();
+      // Public callers use a successful refresh as evidence of freshness
+      // (including before panel injection). Silence must not confirm the
+      // cached list. Handshake scans and CMD's TTL guard handle null themselves.
+      if (states === null) {
+        throw new LuaError("Lua states are not available right now (the game did not answer the state query; it may be loading)",
+          { code: this.connected ? "invalid-state" : "lost" });
+      }
+      return states;
+    }));
   }
 
   stateIndex(name) {
