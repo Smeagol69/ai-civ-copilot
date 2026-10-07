@@ -7,6 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import luaparse from "luaparse";
 import { ACTIONS, ACTION_QUERIES, validateAction, performAction } from "../lib/actions.mjs";
 import { loadLua, Game } from "../lib/game.mjs";
 import { startFakeTuner } from "./fixtures/fake-tuner.mjs";
@@ -80,18 +81,66 @@ test("risky edits copy Firaxis' call shapes", () => {
   assert.match(b.unit_operation, /startsWar/);
 });
 
-test("DELETE is confirmed only by the unit's authoritative absence, not any unrelated change", () => {
-  // verify_unit_command otherwise falls through to the generic
-  // unitChanged(before, after), which is an OR across exists/x/y/moves/
-  // damage/activity - a unit that survives the delete request but merely
-  // moved, took unrelated damage, or changed activity during the read-back
-  // delay would satisfy that and wrongly confirm a delete that never
-  // happened. The DELETE branch must set ok from existence alone.
-  const body = actionBodies().verify_unit_command;
-  assert.match(
-    body,
-    /P\.command == 'UNITCOMMAND_DELETE' then[\s\S]*?o\.ok = after\.exists == false/,
-    "a DELETE-specific branch must confirm by authoritative absence, before the generic any-change fallback",
+// A plain substring/regex match can't tell "this text is present" from "this
+// text actually runs and decides the result" - a mutation deleting the
+// DELETE branch's own `return o` would still match any regex built from its
+// source. There is no Lua interpreter in this suite (only luaparse, a
+// parser), so this walks the real AST instead: it confirms control-flow
+// facts a regex cannot - branch order, that the branch cannot fall through,
+// and that its own condition (not just its body text) depends on a fresh
+// lookup.
+
+// A named Identifier anywhere within an expression subtree. Bounded to the
+// node shapes this function's logic actually uses.
+function refersTo(node, name) {
+  if (!node || typeof node !== "object") return false;
+  if (node.type === "Identifier") return node.name === name;
+  if (node.type === "MemberExpression") return refersTo(node.base, name) || refersTo(node.identifier, name);
+  if (node.type === "CallExpression") return refersTo(node.base, name) || (node.arguments || []).some((a) => refersTo(a, name));
+  if (node.type === "BinaryExpression" || node.type === "LogicalExpression") return refersTo(node.left, name) || refersTo(node.right, name);
+  if (node.type === "UnaryExpression") return refersTo(node.argument, name);
+  return false;
+}
+
+// actionBodies() captures everything between "(P)" and the next function/
+// dispatcher line, which already includes this function's own closing
+// "end" (plus whatever trailing comment sits before the next definition) -
+// so the wrapper must not add a second one.
+function parseFunctionBody(luaFunctionBody) {
+  const ast = luaparse.parse(`local function f(P)${luaFunctionBody}`, { luaVersion: "5.1" });
+  return ast.body[0].body;
+}
+
+test("DELETE verification runs first, requires a fresh authoritative lookup, and cannot fall through", () => {
+  const statements = parseFunctionBody(actionBodies().verify_unit_command);
+  const firstIf = statements.find((s) => s.type === "IfStatement");
+  assert.ok(firstIf, "verify_unit_command must have at least one command-specific branch");
+
+  const cond = firstIf.clauses[0].condition;
+  // luaparse 0.3.x leaves StringLiteral.value null; .raw keeps the quotes.
+  const isDelete = (n) => n.type === "StringLiteral" && n.raw === "'UNITCOMMAND_DELETE'";
+  const isCommandMember = (n) => n.type === "MemberExpression" && n.identifier?.name === "command";
+  const isDeleteCheck =
+    cond.type === "BinaryExpression" &&
+    cond.operator === "==" &&
+    ((isCommandMember(cond.left) && isDelete(cond.right)) || (isCommandMember(cond.right) && isDelete(cond.left)));
+  assert.ok(isDeleteCheck, "the first command-specific branch must be the DELETE check, so no other metadata (promotionIndex, UPGRADE) can run first and substitute for it");
+
+  const branchBody = firstIf.clauses[0].body;
+  assert.equal(branchBody.at(-1)?.type, "ReturnStatement", "the DELETE branch must end in a return - it must never fall through to a later branch");
+
+  const pidDecl = branchBody.find((s) => s.type === "LocalStatement" && s.variables.some((v) => v.name === "pid"));
+  assert.ok(pidDecl, "the branch must look up the player directly - reusing u alone would still hide a failed lookup behind the same nil as a confirmed-absent unit");
+  assert.ok(
+    pidDecl.init.some((e) => e.type === "CallExpression" && e.base?.type === "Identifier" && e.base.name === "checkPlayer"),
+    "pid must come from checkPlayer(P), the same authoritative lookup uiUnit uses internally",
+  );
+
+  const okAssign = branchBody.find((s) => s.type === "AssignmentStatement" && s.variables.some((v) => v.type === "MemberExpression" && v.identifier?.name === "ok"));
+  assert.ok(okAssign, "the branch must assign o.ok");
+  assert.ok(
+    refersTo(okAssign.init[0], "pid"),
+    "o.ok must depend on pid (the fresh lookup), not only on after/u - otherwise a failed lookup is indistinguishable from a confirmed-absent unit",
   );
 });
 

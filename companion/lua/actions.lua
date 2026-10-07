@@ -526,6 +526,22 @@ function A.verify_unit_command(P)
   local u = uiUnit(P)
   local after = unitState(u)
   local o = { before = P.before, after = after }
+  if P.command == 'UNITCOMMAND_DELETE' then
+    -- Checked first, before any other command-specific branch below: a
+    -- request can carry leftover or mismatched metadata (e.g. a
+    -- promotionIndex attached alongside a DELETE), and none of it may ever
+    -- substitute for actually confirming deletion. u already collapses two
+    -- different situations into the same nil - "the requesting player
+    -- became unavailable" (checkPlayer failed: PlayerManager.IsValid
+    -- returned false or threw) and "the player is valid but the unit was
+    -- authoritatively not found" - so re-check the player directly here.
+    -- unitChanged's OR across exists/x/y/moves/damage/activity would also
+    -- wrongly confirm a delete from the surviving unit's unrelated change;
+    -- only a successful lookup that finds no unit confirms one.
+    local pid = checkPlayer(P)
+    o.ok = pid ~= nil and u == nil
+    return o
+  end
   if P.promotionIndex ~= nil then
     o.ok = u ~= nil and u:GetExperience():HasPromotion(P.promotionIndex) == true
     return o
@@ -534,14 +550,6 @@ function A.verify_unit_command(P)
     local r = GameInfo.Units[u:GetType()]
     o.unitType = r and r.UnitType
     o.ok = o.unitType ~= P.typeBefore
-    return o
-  end
-  if P.command == 'UNITCOMMAND_DELETE' then
-    -- unitChanged is an OR across exists/x/y/moves/damage/activity; a
-    -- surviving unit's unrelated move, damage or activity change during the
-    -- read-back delay must never be read as a confirmed delete. Only the
-    -- unit's authoritative absence does.
-    o.ok = after.exists == false
     return o
   end
   o.ok = unitChanged(P.before, after)
