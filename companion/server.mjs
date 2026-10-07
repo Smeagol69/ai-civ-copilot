@@ -24,6 +24,7 @@ import { handlePanelRequest, abilityButtons, AI_PROMPTS } from "./lib/panel.mjs"
 import { TABS } from "./lib/catalog.mjs";
 import { UNKNOWN_LOCK, multiplayerLock } from "./lib/locks.mjs";
 import { tidyAnswer, tidyReport } from "./lib/tidy.mjs";
+import { POLL_LUA, REPLY_LUA, BUTTONS_LUA } from "./lib/panel-mailbox.mjs";
 
 const PORT = Number(process.env.AICIV_PORT || 8737);
 const POLL_MS = Number(process.env.AICIV_POLL_MS || 500);
@@ -62,47 +63,29 @@ function makeCtx(onProgress) {
 // ------------------------------------------------------------------ panel
 // Each poll takes the panel's new requests (keeping them in m.taken until
 // their final reply, so a bridge restart can pick them up again with
-// P.recover) and drains the game events the panel recorded.
-const POLL_LUA = `
-local mp, cloud, humans = false, false, nil
-local mpOk = pcall(function() mp = GameConfiguration.IsNetworkMultiplayer() end)
-local cloudOk = pcall(function() cloud = GameConfiguration.IsPlayByCloud() end)
-pcall(function() humans = GameConfiguration.GetHumanPlayerCount() end)
-local factsOk = mpOk and cloudOk
-local m = ExposedMembers and ExposedMembers.AICivCopilot
-if m == nil then emitJson({ panel = false, mp = mp, cloud = cloud, humans = humans, factsOk = factsOk }) return end
-local q = m.outbox or {}
-m.outbox = {}
-m.taken = m.taken or {}
-local recovered = {}
-if P.recover then for _, r in pairs(m.taken) do recovered[#recovered + 1] = r end end
-for _, r in ipairs(q) do if r.id and r.id ~= 0 then m.taken[r.id] = r end end
-local ev = m.events or {}
-m.events = {}
-m.bridgeTicks = (m.bridgeTicks or 0) + 1
-emitJson({ panel = true, version = m.version, questions = q, recovered = recovered, events = ev, turn = Game.GetCurrentGameTurn(), mp = mp, cloud = cloud, humans = humans, factsOk = factsOk })
-`;
-const REPLY_LUA = `
-local m = ExposedMembers and ExposedMembers.AICivCopilot
-if m and m.taken and (P.kind == "answer" or P.kind == "error") then m.taken[P.id] = nil end
-LuaEvents.AICivCopilot_Reply(P.id, P.kind, P.text)`;
+// P.recover) and drains the game events the panel recorded. POLL_LUA,
+// REPLY_LUA and BUTTONS_LUA live in lib/panel-mailbox.mjs: every request
+// carries the generation of the panel that queued it, and a reply/button
+// update checks it there before touching taken or firing a LuaEvent, so a
+// previous game's late AI work can never land in a newer one's UI.
 
-const BUTTONS_LUA = `LuaEvents.AICivCopilot_Buttons(P.group, P.items)`;
-
-async function sendButtons(group, items) {
+async function sendButtons(group, items, generation) {
   try {
-    await game.lua(UI_STATE, BUTTONS_LUA, { params: { group, items } });
+    await game.lua(UI_STATE, BUTTONS_LUA, { params: { group, items, generation } });
   } catch (err) {
     log(`panel buttons failed: ${err.message}`);
   }
 }
 
 // AI answers get the full tidy (markdown out, flat bullets); the free
-// reports are already laid out and only get blank-line cleanup.
-async function reply(id, kind, text, { ai = false } = {}) {
+// reports are already laid out and only get blank-line cleanup. generation
+// is the panel generation this reply belongs to (undefined for a caller,
+// like /say, with no specific request to inherit one from - REPLY_LUA lets
+// an unstamped reply through rather than guessing it is stale).
+async function reply(id, kind, text, { ai = false, generation } = {}) {
   const clean = kind === "answer" && ai ? tidyAnswer(text) : tidyReport(text);
   try {
-    await game.lua(UI_STATE, REPLY_LUA, { params: { id, kind, text: clean.slice(0, 12000) } });
+    await game.lua(UI_STATE, REPLY_LUA, { params: { id, kind, text: clean.slice(0, 12000), generation } });
   } catch (err) {
     log(`panel reply failed: ${err.message}`);
   }
@@ -156,22 +139,22 @@ async function runAiQueue() {
       // While blocked, answer at once - but let one request through every
       // 30 s, so adding credits takes effect without waiting the full block.
       if (aiBlock && Date.now() < aiBlock.until && Date.now() - aiBlock.lastTry < AI_PROBE_MS) {
-        await reply(job.id, "error", aiBlock.message);
+        await reply(job.id, "error", aiBlock.message, { generation: job.generation });
         continue;
       }
       if (aiBlock) aiBlock.lastTry = Date.now();
-      await reply(job.id, "status", "Thinking...");
+      await reply(job.id, "status", "Thinking...", { generation: job.generation });
       try {
-        const text = await job.run((p) => reply(job.id, "status", p));
-        await reply(job.id, "answer", text, { ai: true });
-        if (job.refreshAbilities) await sendButtons("abilities", abilityButtons(memory));
+        const text = await job.run((p) => reply(job.id, "status", p, { generation: job.generation }));
+        await reply(job.id, "answer", text, { ai: true, generation: job.generation });
+        if (job.refreshAbilities) await sendButtons("abilities", abilityButtons(memory), job.generation);
       } catch (err) {
         state.lastError = err.message;
         if (err instanceof AiUnavailable) {
           if (err.code === "no-credits" || err.code === "auth") aiBlock = { until: Date.now() + AI_BLOCK_MS, lastTry: Date.now(), message: err.message };
-          await reply(job.id, "error", err.message);
+          await reply(job.id, "error", err.message, { generation: job.generation });
         } else {
-          await reply(job.id, "error", `Copilot error: ${readableError(err)}`);
+          await reply(job.id, "error", `Copilot error: ${readableError(err)}`, { generation: job.generation });
         }
       }
     }
@@ -193,6 +176,11 @@ function readableError(err) {
 }
 
 async function handlePanel(q) {
+  // Stamped by the panel's own Queue() when it was queued; threaded through
+  // every reply/button update this request causes, including ones that
+  // only fire later (the AI queue below) - REPLY_LUA/BUTTONS_LUA refuse a
+  // confirmed-stale one rather than let it land in a newer panel's UI.
+  const generation = q.generation;
   const kind = q.kind || "ask";
   if (kind === "new") {
     histories.set("panel", []);
@@ -203,12 +191,12 @@ async function handlePanel(q) {
     if (!text) return;
     log(`panel question #${q.id}: ${text}`);
     const ahead = aiQueue.length + (aiRunning ? 1 : 0);
-    if (ahead) await reply(q.id, "status", `Queued behind ${ahead} AI request(s)...`);
+    if (ahead) await reply(q.id, "status", `Queued behind ${ahead} AI request(s)...`, { generation });
     // Digging edits the game, so with the core locked a dig-sounding question
     // is answered by the advisor instead (a wrong guess never costs an answer).
     let tier = tierFor(text);
     if (tier === "dig" && game.coreLocked) tier = "advisor";
-    aiQueue.push({ id: q.id, key: `ask:${tier}`, refreshAbilities: tier === "dig", run: async (onProgress) => (await answer("panel", text, onProgress, { tier, freeText: true })).answer });
+    aiQueue.push({ id: q.id, key: `ask:${tier}`, generation, refreshAbilities: tier === "dig", run: async (onProgress) => (await answer("panel", text, onProgress, { tier, freeText: true })).answer });
     runAiQueue();
     return;
   }
@@ -221,27 +209,28 @@ async function handlePanel(q) {
   if (PER_TURN.has(key) && q.turn != null) {
     const last = doneForTurn.get(key);
     if (last && last.turn === q.turn && Date.now() - last.at < 30000) {
-      await reply(q.id, "answer", `(Turn ${q.turn} is already covered above.)`);
+      await reply(q.id, "answer", `(Turn ${q.turn} is already covered above.)`, { generation });
       return;
     }
     doneForTurn.set(key, { turn: q.turn, at: Date.now() });
   }
   if (AI_PROMPTS[key] && DIG_KEYS.has(key) && game.coreLocked) {
-    await reply(q.id, "error", `${game.coreLocked} Digging proves functions by editing the game, so it is off in this game.`);
+    await reply(q.id, "error", `${game.coreLocked} Digging proves functions by editing the game, so it is off in this game.`, { generation });
     return;
   }
   if (AI_PROMPTS[key]) {
     // The same AI button pressed again while the first is still waiting:
     // one answer is enough (and costs once).
     if (aiQueue.some((j) => j.key === key)) {
-      await reply(q.id, "answer", "Already queued - the answer will appear with the first press.");
+      await reply(q.id, "answer", "Already queued - the answer will appear with the first press.", { generation });
       return;
     }
     const ahead = aiQueue.length + (aiRunning ? 1 : 0);
-    if (ahead) await reply(q.id, "status", `Queued behind ${ahead} AI request(s)...`);
+    if (ahead) await reply(q.id, "status", `Queued behind ${ahead} AI request(s)...`, { generation });
     aiQueue.push({
       id: q.id,
       key,
+      generation,
       refreshAbilities: ["explore_ai", "dig_ai", "dig3_ai"].includes(key),
       run: async (onProgress) => {
         const tier = DIG_KEYS.has(key) ? "dig" : "advisor";
@@ -253,27 +242,28 @@ async function handlePanel(q) {
     return;
   }
   try {
-    const res = await handlePanelRequest(makeCtx((p) => reply(q.id, "status", p)), q);
-    if (res.buttons) await sendButtons(res.buttons.group, res.buttons.items);
-    await reply(q.id, res.kind || "answer", res.text);
+    const res = await handlePanelRequest(makeCtx((p) => reply(q.id, "status", p, { generation })), q);
+    if (res.buttons) await sendButtons(res.buttons.group, res.buttons.items, generation);
+    await reply(q.id, res.kind || "answer", res.text, { generation });
   } catch (err) {
     state.lastError = err.message;
-    await reply(q.id, "error", `${key}: ${err.message}`);
+    await reply(q.id, "error", `${key}: ${err.message}`, { generation });
   }
 }
 
 // Requests taken by an earlier bridge process that never got a final reply.
 // AI requests run again; game actions are not repeated (the earlier process
-// may have done them) - the player is asked to press again.
+// may have done them) - the player is asked to press again. Each q already
+// carries the generation it was queued under (preserved through m.taken).
 async function recover(list) {
   for (const q of list || []) {
     const isAi = (q.kind || "ask") === "ask" || AI_PROMPTS[String(q.key || "")];
     if (isAi) {
       log(`picking up #${q.id} (${q.key || "question"}) after a bridge restart`);
-      await reply(q.id, "status", "Picked up again after a bridge restart...");
+      await reply(q.id, "status", "Picked up again after a bridge restart...", { generation: q.generation });
       await handlePanel(q);
     } else {
-      await reply(q.id, "error", `The bridge restarted before [${q.text || q.key}] finished. Check the game, then press it again if it was not done.`);
+      await reply(q.id, "error", `The bridge restarted before [${q.text || q.key}] finished. Check the game, then press it again if it was not done.`, { generation: q.generation });
     }
   }
 }
@@ -378,7 +368,15 @@ async function pollPanel() {
     for (const e of res.events) if (e.kind === "war" || e.kind === "deal" || e.kind === "peace") log(`event: ${e.text}`);
   }
   const live = !!(res.panel && state.panelLoaded);
-  if (live && !state.panel) {
+  // A generation change (a different game's panel, stamped once at its own
+  // init) must re-announce and resend buttons even if `live` never dipped to
+  // false in between polls - a fast reload can look identical to "still the
+  // same panel" from state.panel alone, but it is a fresh incarnation with
+  // its own fresh abilities/tabs. state.panelGeneration is also what /say
+  // and any other caller with no specific request of its own default to.
+  const newGeneration = live && res.generation != null && res.generation !== state.panelGeneration;
+  if (live) state.panelGeneration = res.generation;
+  if (live && (!state.panel || newGeneration)) {
     log(`in-game panel detected (version ${res.version ?? "?"})`);
     // A mod's UI context starts hidden; make sure the panel's is shown (the
     // panel does this itself too - this covers older installed versions).
@@ -389,10 +387,10 @@ async function pollPanel() {
     }
     // Tell the panel who is answering, and give it the saved abilities.
     // Short: it shares the status line with the New button.
-    await reply(0, "hello", `${shortModel(ADVISOR_MODEL)} / ${shortModel(DIG_MODEL)}`);
+    await reply(0, "hello", `${shortModel(ADVISOR_MODEL)} / ${shortModel(DIG_MODEL)}`, { generation: state.panelGeneration });
     // Panel v5+ rebuilds its tabs from this, so new buttons need no reload.
-    await sendButtons("tabs", TABS);
-    await sendButtons("abilities", abilityButtons(memory));
+    await sendButtons("tabs", TABS, state.panelGeneration);
+    await sendButtons("abilities", abilityButtons(memory), state.panelGeneration);
   }
   state.panel = live;
   if (res.turn != null && res.turn !== state.lastHistoryTurn) {
@@ -401,11 +399,19 @@ async function pollPanel() {
     game.standing().then((s) => s && !s.error && memory.history.record(s)).catch((err) => log(`standing: ${err.message}`));
   }
   state.turn = res.turn ?? state.turn;
-  if (!recovered) {
+  // POLL_LUA drains outbox/taken unconditionally, before this function ever
+  // learns whether the panel's own Lua state - and so its init, which clears
+  // a previous game's leftovers - has run in this game yet (loaded, above).
+  // A poll landing in that window would otherwise hand a previous session's
+  // queued click or in-flight request to handlePanel/recover as if it were
+  // this game's own; discard it instead, exactly like the panel's own init
+  // discards it once it does run - nothing legitimate can be queued yet
+  // regardless, since the panel has no button to click until it is loaded.
+  if (!recovered && loaded) {
     recovered = true;
     await recover(res.recovered);
   }
-  for (const q of res.questions || []) await handlePanel(q);
+  if (loaded) for (const q of res.questions || []) await handlePanel(q);
 }
 
 // When the game connection drops, say what was running at that moment: if
@@ -475,7 +481,7 @@ const routes = {
     return performAction(game, b.action, b.args || {}, { journal: memory });
   },
   "POST /tool": async (b) => runTool(makeCtx(), b.name, b.input || {}),
-  "POST /say": async (b) => (await reply(0, b.kind || "answer", b.text), { ok: true }),
+  "POST /say": async (b) => (await reply(0, b.kind || "answer", b.text, { generation: state.panelGeneration }), { ok: true }),
 };
 
 const server = http.createServer(async (req, res) => {

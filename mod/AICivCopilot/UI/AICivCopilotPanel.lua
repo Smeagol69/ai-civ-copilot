@@ -38,6 +38,14 @@ m_NextId = Mailbox.nextId or 1;
 -- the bridge's next poll can ever see them.
 Mailbox.outbox = {};
 Mailbox.taken = {};
+-- Every panel incarnation gets its own generation, continued (never reset)
+-- across reloads just like nextId. Queue() below stamps every request with
+-- it, and MY_GENERATION lets this incarnation's own OnReply/OnButtons
+-- recognize and ignore a reply/button update meant for a different one -
+-- a second check alongside the bridge's own in REPLY_LUA/BUTTONS_LUA
+-- (lib/panel-mailbox.mjs), not a replacement for it.
+Mailbox.generation = (Mailbox.generation or 0) + 1;
+local MY_GENERATION = Mailbox.generation;
 -- Toggles (kept across panel reloads within a session).
 if Mailbox.autoBrief == nil then Mailbox.autoBrief = true; end      -- free turn brief each turn
 if Mailbox.autoAdvise == nil then Mailbox.autoAdvise = false; end   -- AI advice each turn (costs)
@@ -281,7 +289,7 @@ local function Queue(kind, text, key)
 	local id = m_NextId;
 	m_NextId = m_NextId + 1;
 	Mailbox.nextId = m_NextId;
-	table.insert(Mailbox.outbox, { id = id, kind = kind, text = text, key = key, sel = Selection(), turn = Game.GetCurrentGameTurn() });
+	table.insert(Mailbox.outbox, { id = id, kind = kind, text = text, key = key, sel = Selection(), turn = Game.GetCurrentGameTurn(), generation = MY_GENERATION });
 	m_Busy = m_Busy + 1;
 	m_Titles[id] = text;
 	local title = (kind == "ask") and (COLOR_YOU .. Escape(text) .. "[ENDCOLOR]") or (COLOR_HEAD .. Escape(text) .. "[ENDCOLOR]");
@@ -326,7 +334,7 @@ local function OnNew()
 	m_Count = 0;
 	m_Pending = {};
 	m_Busy = 0;
-	table.insert(Mailbox.outbox, { id = 0, kind = "new", text = "new" });
+	table.insert(Mailbox.outbox, { id = 0, kind = "new", text = "new", generation = MY_GENERATION });
 	AddEntry(COLOR_DIM .. "New conversation.[ENDCOLOR]");
 	RefreshStatus();
 end
@@ -423,14 +431,20 @@ local function ApplyTabs(items)
 	if not Controls.Panel:IsHidden() then ShowTab(m_Tab); end
 end
 
-local function OnButtons(group, items)
+-- generation is nil for a pre-upgrade bridge, or for REPLY_LUA/BUTTONS_LUA's
+-- own ambiguous case (checked and documented there) - only a confirmed
+-- mismatch against this incarnation's own generation is ignored here; this
+-- is a second check, not a replacement for the bridge's own.
+local function OnButtons(generation, group, items)
+	if generation ~= nil and generation ~= MY_GENERATION then return; end
 	if type(items) ~= "table" then return; end
 	if group == "tabs" then ApplyTabs(items); return; end
 	m_Dynamic[group] = items;
 	if m_Tab and m_Tab.dynamic == group and not Controls.Panel:IsHidden() then ShowTab(m_Tab); end
 end
 
-local function OnReply(id, kind, text)
+local function OnReply(generation, id, kind, text)
+	if generation ~= nil and generation ~= MY_GENERATION then return; end
 	if id ~= 0 and kind ~= "hello" and m_Pending[id] == nil then return; end
 	if kind == "hello" then
 		m_Model = tostring(text or "");
