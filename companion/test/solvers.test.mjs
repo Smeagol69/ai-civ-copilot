@@ -68,6 +68,24 @@ test("productionOverview surfaces a city name whenever its status could not be c
   assert.ok(!p.idle.some((name) => p.unknown.includes(name)), "idle and unknown are mutually exclusive");
 });
 
+test("cityProductionStatus is the single source of truth productionOverview itself uses", () => {
+  // Any other caller holding just one raw city object (not a full
+  // snapshot) must classify it exactly the same way productionOverview
+  // does for that same city - this is what panel.mjs's formatCity relies
+  // on to avoid re-deriving (and drifting from) the same classification.
+  for (const c of [
+    SNAP.cities[0], // Rome: named active production
+    SNAP.cities[1], // Antium: confirmed empty
+    { ...SNAP.cities[0], production: undefined }, // unread
+    { ...SNAP.cities[0], production: { turnsLeft: 3 } }, // present, neither name nor count
+    { ...SNAP.cities[0], production: { turnsLeft: 3, queueSize: 1 } }, // confirmed nonempty, unresolved name
+  ]) {
+    const status = solve.cityProductionStatus(c);
+    const row = solve.productionOverview({ cities: [c] }).cities[0];
+    assert.deepEqual(status, { building: row.building, turnsLeft: row.turnsLeft, queueSize: row.queueSize, productionUnknown: row.productionUnknown });
+  }
+});
+
 test("threat report ranks hostile units first and skips civilians", () => {
   const t = solve.threatReport(SNAP);
   assert.equal(t.hostileCount, 2);

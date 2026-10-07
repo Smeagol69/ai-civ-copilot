@@ -216,10 +216,26 @@ export function formatResources(snap) {
 export function formatCity(c) {
   if (!c) return "That city is not in the snapshot.";
   const y = c.yields || {};
+  const p = solve.cityProductionStatus(c);
+  // Mirrors formatProduction's own distinction and priority order: a
+  // known item name is sufficient on its own, regardless of whether
+  // queueSize was separately confirmed. Only once there is no name does
+  // queueSize matter - and "nothing" must not also stand for "we never
+  // actually read this" or "something is queued but its name didn't
+  // resolve", both genuinely different from a confirmed, empty queue.
+  const building = p.productionUnknown
+    ? "unknown"
+    : p.building
+      ? `${pretty(p.building)} (${p.turnsLeft} turns)`
+      : p.queueSize == null
+        ? "unknown"
+        : p.queueSize > 0
+          ? `queued, unnamed (${p.turnsLeft} turns)`
+          : "nothing";
   const lines = [
     `${c.name}${c.capital ? " (capital)" : ""} at (${c.x},${c.y}), population ${c.population}.`,
     `Food ${r1(y.FOOD)} Prod ${r1(y.PRODUCTION)} Gold ${r1(y.GOLD)} Sci ${r1(y.SCIENCE)} Cul ${r1(y.CULTURE)} Faith ${r1(y.FAITH)}`,
-    `Building: ${c.production?.item ? `${pretty(c.production.item)} (${c.production.turnsLeft} turns)` : "nothing"}.`,
+    `Building: ${building}.`,
     `Housing ${c.housing}, amenities ${c.amenities}/${c.amenitiesNeeded}, grows in ${c.turnsToGrow} turns.`,
     `Districts: ${(c.districts || []).filter((d) => d.type !== "DISTRICT_CITY_CENTER").map((d) => pretty(d.type)).join(", ") || "none"}.`,
     `Buildings: ${(c.buildings || []).map(pretty).join(", ") || "none"}.`,

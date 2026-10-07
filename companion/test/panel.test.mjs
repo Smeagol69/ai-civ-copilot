@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { HANDLERS, AI_PROMPTS, handlePanelRequest, formatAction, abilityButtons, formatProduction, formatTurnBrief } from "../lib/panel.mjs";
+import { HANDLERS, AI_PROMPTS, handlePanelRequest, formatAction, abilityButtons, formatProduction, formatTurnBrief, formatCity } from "../lib/panel.mjs";
 import { Game } from "../lib/game.mjs";
 import { Memory } from "../lib/memory.mjs";
 import { ACTIONS, ACTION_QUERIES, validateAction } from "../lib/actions.mjs";
@@ -123,6 +123,25 @@ test("formatTurnBrief does not say 'Nothing urgent' while a city's production st
   const brief = formatTurnBrief(quietSnap);
   assert.doesNotMatch(brief, /Nothing urgent\./);
   assert.match(brief, /Unknown production: Lublin/);
+});
+
+test("formatCity distinguishes unknown and queued-unnamed production from a confirmed-empty queue", () => {
+  // formatCity takes just the raw city object, not a full snapshot - it
+  // must classify production the same way formatProduction (which goes
+  // through productionOverview) already does for the same shapes.
+  const base = SNAP.cities[0];
+  assert.match(formatCity({ ...base, production: undefined }), /Building: unknown\./, "an unread production field is not confirmed empty");
+  assert.match(formatCity({ ...base, production: { turnsLeft: 3 } }), /Building: unknown\./, "a present object with neither name nor count resolved is not confirmed empty");
+  assert.match(formatCity({ ...base, production: { turnsLeft: 3, queueSize: 1 } }), /Building: queued, unnamed \(3 turns\)\./, "a confirmed nonempty queue is not idle, even with an unresolved item name");
+  assert.match(formatCity({ ...base, production: { item: null, queueSize: 0 } }), /Building: nothing\./, "a confirmed empty queue is unaffected");
+  assert.match(formatCity({ ...base, production: { item: "UNIT_SCOUT", turnsLeft: 4 } }), /Building: Scout \(4 turns\)\./, "a known item name is unaffected");
+});
+
+test("formatCity still shows a known item name even when its own queueSize was not separately confirmed", () => {
+  // A resolved item name is sufficient on its own - it must not be
+  // demoted to "unknown" just because queueSize happens to be missing.
+  const text = formatCity({ ...SNAP.cities[0], production: { item: "UNIT_WARRIOR", turnsLeft: 2 } });
+  assert.match(text, /Building: Warrior \(2 turns\)\./);
 });
 
 test("every action button sends a typed action that passes validation", async () => {

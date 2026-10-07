@@ -43,28 +43,38 @@ export function empireSummary(snap) {
   };
 }
 
+// A single city's production, classified the same way regardless of
+// caller: snapshot.lua's try('city.production', ...) can genuinely
+// fail, leaving c.production entirely absent - a different situation
+// from a confirmed-empty queue ({item: null, queueSize: 0}). Collapsing
+// both into the same building: null, queueSize: 0 would read as "safe
+// to end the turn" (or "nothing is building") on a city whose real
+// status was never actually read. Separately, snapshot.lua's
+// city.production omits item entirely whenever its hash lookup fails
+// to resolve a name, even though queueSize still genuinely confirms
+// something is queued - a falsy building name alone must not be read
+// the same as a confirmed, empty queue either. Any caller with just one
+// raw city object (not a full snapshot) must use this, not re-derive
+// its own version of the same classification.
+export function cityProductionStatus(c) {
+  const known = c.production != null;
+  const queueSize = known && typeof c.production.queueSize === "number" ? c.production.queueSize : null;
+  return {
+    building: known ? c.production.item || null : null,
+    turnsLeft: known ? c.production.turnsLeft ?? null : null,
+    queueSize,
+    productionUnknown: !known,
+  };
+}
+
 export function productionOverview(snap) {
   const rows = (snap.cities || []).map((c) => {
-    // snapshot.lua's try('city.production', ...) can genuinely fail,
-    // leaving c.production entirely absent - a different situation from a
-    // confirmed-empty queue ({item: null, queueSize: 0}). Collapsing both
-    // into the same building: null, queueSize: 0 would read as "safe to
-    // end the turn" on a city whose real status was never actually read.
-    const known = c.production != null;
-    // snapshot.lua's city.production omits item entirely whenever its
-    // hash lookup fails to resolve a name, even though queueSize still
-    // genuinely confirms something is queued - a falsy building name
-    // alone must not be read the same as a confirmed, empty queue.
-    const queueSize = known && typeof c.production.queueSize === "number" ? c.production.queueSize : null;
     return {
       cityId: c.id,
       name: c.name,
       population: c.population,
       production: round(c.yields?.PRODUCTION),
-      building: known ? c.production.item || null : null,
-      turnsLeft: known ? c.production.turnsLeft ?? null : null,
-      queueSize,
-      productionUnknown: !known,
+      ...cityProductionStatus(c),
       turnsToGrow: c.turnsToGrow,
       housingRoom: typeof c.housing === "number" ? round(c.housing - c.population) : null,
       amenityBalance: typeof c.amenities === "number" && typeof c.amenitiesNeeded === "number" ? c.amenities - c.amenitiesNeeded : null,
