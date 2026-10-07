@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import luaparse from "luaparse";
 import * as dig from "../lib/discovery.mjs";
 import { analyzeStanding, formatStanding, History } from "../lib/strategy.mjs";
 import { Memory } from "../lib/memory.mjs";
@@ -68,7 +69,7 @@ test("only zero-argument getters with same-object zero-argument evidence are pro
 });
 
 // A single shipped script with exactly the given lines, for testing
-// indexCallSites' per-line regex directly without the shared fakeFiles()
+// indexCallSites' scanner directly without the shared fakeFiles()
 // fixture (which several other tests assert an exact method count against).
 function filesWith(lines) {
   const dir = tmp();
@@ -79,8 +80,89 @@ function filesWith(lines) {
   return { gameDir: dir, list: () => [file], lines: (f) => fs.readFileSync(f, "utf8").split("\n") };
 }
 
+const declarationTrivia = [
+  "function ns . plot:GetYield() end",
+  "function ns --[[gap]] . plot:GetYield() end",
+  "function ns\n.\nplot:GetYield() end",
+  "function ns--[[gap\nmore gap]] . plot:GetYield() end",
+  `function\n--[[${"x".repeat(401)}]]\nplot:GetYield() end`,
+  "function ns --[[gap]] . sub\n.\nplot:GetYield() end",
+];
+
+test("declaration heads separated by Lua trivia never provide call evidence", () => {
+  for (const source of declarationTrivia) {
+    luaparse.parse(source, { luaVersion: "5.1" });
+    assert.equal(dig.indexCallSites(filesWith(source.split("\n"))).has("GetYield"), false, source);
+  }
+});
+
+test("declaration trivia cannot make the public probe gate accept an uncalled getter", () => {
+  for (const source of declarationTrivia) {
+    const memory = fakeMemory();
+    dig.mapApi(memory, filesWith(source.split("\n")), memory.discovery);
+    assert.equal(dig.probeCandidates(memory.discovery).some((e) => e.holder === "Plot" && e.method === "GetYield"), false, source);
+  }
+});
+
+test("a function-prefixed namespace does not hide a genuine method call", () => {
+  for (const source of [
+    "local value = functionfoo.plot:GetYield()",
+    "local value = functionfoo.\nplot:GetYield()",
+    "local value = functionHelpers . plot:GetYield()",
+  ]) {
+    luaparse.parse(source, { luaVersion: "5.1" });
+    const memory = fakeMemory();
+    const files = filesWith(source.split("\n"));
+    const e = dig.indexCallSites(files).get("GetYield");
+    assert.equal(e?.count, 1, source);
+    assert.equal(e.zeroArg, true, source);
+    dig.mapApi(memory, files, memory.discovery);
+    assert.ok(dig.probeCandidates(memory.discovery).some((e) => e.holder === "Plot" && e.method === "GetYield"), source);
+  }
+});
+
+test("a confirmed multiline empty call retains its public probe eligibility", () => {
+  for (const source of [
+    "local value = plot:GetYield(\n)",
+    "local value = plot:GetYield( -- no arguments\n --[[still no arguments]] )",
+    "local value = plot\n:GetYield(\n)",
+  ]) {
+    luaparse.parse(source, { luaVersion: "5.1" });
+    const memory = fakeMemory();
+    const files = filesWith(source.split("\n"));
+    const e = dig.indexCallSites(files).get("GetYield");
+    assert.equal(e?.count, 1, source);
+    assert.equal(e.zeroArg, true, source);
+    dig.mapApi(memory, files, memory.discovery);
+    assert.ok(dig.probeCandidates(memory.discovery).some((e) => e.holder === "Plot" && e.method === "GetYield"), source);
+  }
+});
+
+test("masking and multiline calls retain the real call's original source location", () => {
+  const lines = [
+    "local text = [=[",
+    "plot:GetYield()",
+    "]=]",
+    "function ns",
+    ". plot:GetYield()",
+    "  return 0 end",
+    "local first = plot",
+    "  :GetYield(",
+    "  )",
+    "local second = plot:GetYield(0)",
+  ];
+  luaparse.parse(lines.join("\n"), { luaVersion: "5.1" });
+  const e = dig.indexCallSites(filesWith(lines)).get("GetYield");
+  assert.equal(e.count, 2, "only the two real calls count");
+  assert.equal(e.zeroArg, true, "the first real call has a confirmed empty list");
+  assert.equal(e.sites.length, 1, "same receiver/context still share an example");
+  assert.equal(e.sites[0].line, 7);
+  assert.equal(e.sites[0].code, lines[6]);
+  assert.equal(e.sites[0].file, "Base/Assets/UI/Script.lua");
+});
+
 test("a multiline call with its argument on a later line is not inferred as zero-argument", () => {
-  // The regex matches per line; a call whose "(" opens at end of line has
+  // The original line-based regex gave a call whose "(" opens at end of line
   // nothing after it on that line, so the captured argument text is empty
   // even though the real call takes YieldTypes.YIELD_FOOD on the next line.
   const files = filesWith(["local y = plot:GetYield(", "    YieldTypes.YIELD_FOOD", ")"]);

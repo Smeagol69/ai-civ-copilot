@@ -42,183 +42,91 @@ function contextOf(rel) {
   return "ui";
 }
 
-// Lua's long-bracket syntax ([[ ]], [=[ ]=], [==[ ]==], ...) opens at any
-// level; the closer must repeat the exact same count of "=" signs, so a
-// shorter or longer marker nested inside (e.g. a --[[ ]] inside a --[=[ ]=])
-// is never mistaken for the real close. Returns null if line[i] is not a
-// long-bracket opener.
-function longBracketOpen(line, i) {
-  if (line[i] !== "[") return null;
-  let j = i + 1;
-  let level = 0;
-  while (line[j] === "=") {
-    level++;
-    j++;
+// Masking and declaration offsets reuse the verified operator scanner from
+// 884dfc78f0c846db57a7be1e4f44eaf1a7c30322. Keep source positions intact:
+// comments are whitespace, while strings remain non-whitespace arguments.
+// This handles Lua trivia across lines without treating a declaration's
+// parameter list as call evidence or hiding names prefixed with "function".
+function maskLuaLiterals(source) {
+  const code = source.split("");
+  const mask = (start, end, char) => {
+    for (let i = start; i < end; i++) if (source[i] !== "\n" && source[i] !== "\r") code[i] = char;
+  };
+  const longEnd = (start) => {
+    if (source[start] !== "[") return null;
+    let at = start + 1;
+    while (source[at] === "=") at++;
+    if (source[at] !== "[") return null;
+    const close = `]${source.slice(start + 1, at)}]`;
+    const end = source.indexOf(close, at + 1);
+    return end < 0 ? source.length : end + close.length;
+  };
+  for (let i = 0; i < source.length;) {
+    if (source[i] === "-" && source[i + 1] === "-") {
+      const newline = source.indexOf("\n", i + 2);
+      const end = longEnd(i + 2) ?? (newline < 0 ? source.length : newline);
+      mask(i, end, " ");
+      i = end;
+    } else if (source[i] === '"' || source[i] === "'") {
+      const quote = source[i];
+      let end = i + 1;
+      while (end < source.length) {
+        if (source[end] === "\\") end = Math.min(end + 2, source.length);
+        else if (source[end++] === quote) break;
+      }
+      mask(i, end, "#");
+      i = end;
+    } else {
+      const end = longEnd(i);
+      if (end !== null) {
+        mask(i, end, "#");
+        i = end;
+      } else i++;
+    }
   }
-  if (line[j] !== "[") return null;
-  return { closer: "]" + "=".repeat(level) + "]", end: j + 1 };
+  return code.join("");
 }
 
-// Strip Lua comments and string-literal contents before matching, so a
-// trailing comment that happens to mention a call ("-- plot:GetYield()"),
-// a quoted or long-bracket string containing call-shaped text, or a
-// --[[ ]] / --[=[ ]=] block comment of any level are never mistaken for
-// executed code. state carries whatever span is still open (a block
-// comment, a long-bracket string, or a short string continued past its
-// line with a backslash) across lines, since any of them can span many.
-// A string literal's content is replaced with a placeholder rather than
-// removed outright - removing it would collapse a call whose only
-// argument is a string literal, e.g. Lookup("LOC_X"), into looking like
-// a zero-argument call.
-function codeOnly(line, state) {
-  let out = "";
-  let i = 0;
-  let { mode = null, closer = null, escaped = false } = state || {};
-  const n = line.length;
-  while (i < n) {
-    // A short quoted string processes backslash escapes - \" inside it is
-    // a literal quote character, not the terminator - so resuming one
-    // after a backslash-newline continuation must scan the same way it
-    // was opened, not with a plain indexOf. A long-bracket span (comment
-    // or [=*[ ]=*] string) never processes escapes, so its exact-literal
-    // closer search is already correct and must stay separate from this.
-    if (mode === "string" && escaped) {
-      while (i < n && line[i] !== closer) {
-        if (line[i] === "\\") i++;
-        i++;
-      }
-      if (i >= n) return { out, state: { mode, closer, escaped } };
-      i++;
-      mode = null;
-      closer = null;
-      escaped = false;
-      continue;
-    }
-    if (mode) {
-      const wasComment = mode === "comment";
-      const end = line.indexOf(closer, i);
-      if (end === -1) return { out, state: { mode, closer } };
-      i = end + closer.length;
-      mode = null;
-      closer = null;
-      // A comment contributes no code, but removing it must not glue
-      // whatever preceded it (possibly on an earlier line) directly onto
-      // whatever follows - "function" and "plot" must stay two tokens,
-      // never fuse into "functionplot". A string's placeholder was
-      // already added when it was opened, so it needs nothing more here.
-      if (wasComment) out += " ";
-      continue;
-    }
-    if (line[i] === "-" && line[i + 1] === "-") {
-      const open = longBracketOpen(line, i + 2);
-      if (open) {
-        const end = line.indexOf(open.closer, open.end);
-        if (end === -1) return { out, state: { mode: "comment", closer: open.closer } };
-        i = end + open.closer.length;
-        out += " ";
-        continue;
-      }
-      break;
-    }
-    const ch = line[i];
-    if (ch === '"' || ch === "'") {
-      out += ch + "x" + ch;
-      i++;
-      while (i < n && line[i] !== ch) {
-        if (line[i] === "\\") i++;
-        i++;
-      }
-      if (i >= n) return { out, state: { mode: "string", closer: ch, escaped: true } };
-      i++;
-      continue;
-    }
-    if (ch === "[") {
-      const open = longBracketOpen(line, i);
-      if (open) {
-        out += '"x"';
-        const end = line.indexOf(open.closer, open.end);
-        if (end === -1) return { out, state: { mode: "string", closer: open.closer } };
-        i = end + open.closer.length;
-        continue;
-      }
-    }
-    out += ch;
-    i++;
-  }
-  return { out, state: { mode, closer, escaped } };
-}
-
-// One pass over every shipped .lua/.ltp line: method name -> call sites.
+// One pass over every shipped .lua/.ltp source: method name -> call sites.
 export function indexCallSites(files, { perMethod = 24 } = {}) {
   const index = new Map();
-  // The closing paren is its own group and is never assumed - matching is
-  // line by line, so a call whose "(" opens at end of line (the real
-  // argument is on the next line, or the file is simply truncated there)
-  // would otherwise look identical to a confirmed same-line zero-argument
-  // call. The zero-arg inference below requires that group to be present.
-  const re = /([A-Za-z_][A-Za-z0-9_]*)\s*([:.])\s*([A-Z][A-Za-z0-9_]*)\s*\(([^()]*)(\))?/g;
-  // "function plot:GetYield() ... end" defines the method; it never calls
-  // it. The receiver:Method( text a declaration head produces is identical
-  // to a real call, so a match preceded (immediately, or through a dotted
-  // qualifier chain like "ns.plot:") by the bare keyword "function" is a
-  // definition, not evidence, and must be skipped outright. The qualifier
-  // group has no \s+ of its own - "a.b.c" has no whitespace between its
-  // own segments, only between "function" and the first one - while a
-  // genuine call elsewhere, including inside that function's own body, has
-  // different preceding text (no "function" keyword at all) and matches.
-  // \s* (not \s+) after "function": this same regex also recomputes the
-  // carried-forward declTail at the very end of a line, where "function"
-  // may be the last character seen so far with no trailing whitespace yet
-  // - the line break supplies it once concatenated with the next line.
-  // Real Lua source can never glue "function" directly onto an identifier
-  // (that would tokenize as one longer identifier, not two separate
-  // tokens), so relaxing this to zero-or-more introduces no new risk.
-  const DECLARATION_HEAD = /\bfunction\s*(?:[A-Za-z_][A-Za-z0-9_]*\.)*\s*$/;
+  const re = /([A-Za-z_][A-Za-z0-9_]*)[ \t\v\f\r\n]*([:.])[ \t\v\f\r\n]*([A-Z][A-Za-z0-9_]*)[ \t\v\f\r\n]*\(/g;
+  // Record the opening-paren offsets of declaration heads, allowing Lua
+  // whitespace/comments between every qualifier. Matching by offset avoids
+  // confusing a real call inside a function body with the declaration itself.
+  const declaration = /\bfunction[ \t\v\f\r\n]+[A-Za-z_][A-Za-z0-9_]*(?:[ \t\v\f\r\n]*[.:][ \t\v\f\r\n]*[A-Za-z_][A-Za-z0-9_]*)*[ \t\v\f\r\n]*\(/g;
   for (const f of files.list()) {
     const lower = f.toLowerCase();
     if (!lower.endsWith(".lua") && !lower.endsWith(".ltp")) continue;
     const rel = path.relative(files.gameDir, f);
     const ctx = contextOf(rel);
     const lines = files.lines ? files.lines(f) : fs.readFileSync(f, "utf8").split(/\r?\n/);
-    let state = null;
-    // Carries "function" (or "function ns.") forward when it is the last
-    // thing seen on a line with nothing yet after it - the receiver can be
-    // on the next line. The inserted " " stands in for the real line break
-    // codeOnly doesn't preserve, so "function" and the next line's "plot"
-    // don't get concatenated into one token the way comment removal could.
-    let declTail = "";
-    for (let i = 0; i < lines.length; i++) {
+    const code = maskLuaLiterals(lines.join("\n"));
+    const declarations = new Set([...code.matchAll(declaration)].map((m) => m.index + m[0].length - 1));
+    let i = 0;
+    let lineStart = 0;
+    for (const m of code.matchAll(re)) {
+      while (lineStart + lines[i].length < m.index) lineStart += lines[i++].length + 1;
       const line = lines[i];
-      // The lexer still has to see this line even when it is too long to
-      // scan for call evidence - a comment or string that closes on this
-      // very line must still advance state, or every real call after it
-      // looks like it's still inside that span forever.
-      const stripped = codeOnly(line, state);
-      state = stripped.state;
-      if (line.length > 400) {
-        declTail = "";
-        continue;
+      const open = m.index + m[0].length - 1;
+      if (line.length > 400 || declarations.has(open)) continue;
+      const method = m[3];
+      let e = index.get(method);
+      if (!e) index.set(method, (e = { count: 0, sites: [], contexts: new Set(), zeroArg: false, zeroArgVars: new Set() }));
+      e.count++;
+      e.contexts.add(ctx);
+      // A closing paren after only Lua trivia confirms an empty argument list,
+      // even across lines. An incomplete call or a masked string cannot do so.
+      let next = open + 1;
+      while (next < code.length && /[ \t\v\f\r\n]/.test(code[next])) next++;
+      if (m[2] === ":" && code[next] === ")") {
+        e.zeroArg = true;
+        if (e.zeroArgVars.size < 40) e.zeroArgVars.add(m[1]);
       }
-      const combined = declTail + " " + stripped.out;
-      const offset = declTail.length + 1;
-      for (const m of stripped.out.matchAll(re)) {
-        if (DECLARATION_HEAD.test(combined.slice(0, offset + m.index))) continue;
-        const method = m[3];
-        let e = index.get(method);
-        if (!e) index.set(method, (e = { count: 0, sites: [], contexts: new Set(), zeroArg: false, zeroArgVars: new Set() }));
-        e.count++;
-        e.contexts.add(ctx);
-        if (m[2] === ":" && m[5] !== undefined && m[4] !== undefined && m[4].trim() === "") {
-          e.zeroArg = true;
-          if (e.zeroArgVars.size < 40) e.zeroArgVars.add(m[1]);
-        }
-        // Keep a spread of examples: one per receiver variable and context,
-        // so a site on the right kind of object is likely to be among them.
-        const site = { v: m[1], file: rel.replace(/\\/g, "/"), line: i + 1, code: line.trim().slice(0, 200), ctx };
-        if (e.sites.length < perMethod && !e.sites.some((x) => x.v === site.v && x.ctx === site.ctx)) e.sites.push(site);
-      }
-      const tail = DECLARATION_HEAD.exec(combined);
-      declTail = tail ? tail[0] : "";
+      // Keep a spread of examples: one per receiver variable and context,
+      // so a site on the right kind of object is likely to be among them.
+      const site = { v: m[1], file: rel.replace(/\\/g, "/"), line: i + 1, code: line.trim().slice(0, 200), ctx };
+      if (e.sites.length < perMethod && !e.sites.some((x) => x.v === site.v && x.ctx === site.ctx)) e.sites.push(site);
     }
   }
   return index;
