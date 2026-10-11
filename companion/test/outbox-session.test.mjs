@@ -58,6 +58,7 @@ const truthy = (v) => ![undefined, null, false].includes(v);
 const RETURN = Symbol("Lua return");
 
 function evaluate(n, scope) {
+  if (!n) return undefined;
   switch (n.type) {
     case "Identifier": return scope[n.name];
     case "NilLiteral": return undefined;
@@ -68,6 +69,7 @@ function evaluate(n, scope) {
     case "IndexExpression": return evaluate(n.base, scope)[evaluate(n.index, scope)];
     case "UnaryExpression":
       if (n.operator === "not") return !truthy(evaluate(n.argument, scope));
+      if (n.operator === "#") return Object.keys(evaluate(n.argument, scope)).length;
       break;
     case "LogicalExpression": {
       const left = evaluate(n.left, scope);
@@ -82,9 +84,21 @@ function evaluate(n, scope) {
       if (n.operator === "+") return a + b;
       break;
     }
-    case "TableConstructorExpression":
-      assert.deepEqual(n.fields, [], "this interpreter only ever builds empty table literals ({})");
-      return {};
+    case "TableConstructorExpression": {
+      const out = {};
+      for (const field of n.fields) {
+        assert.equal(field.type, "TableKeyString");
+        const value = evaluate(field.value, scope);
+        if (value != null) out[field.key.name] = value;
+      }
+      return out;
+    }
+    case "FunctionDeclaration":
+      return (...args) => {
+        const local = Object.create(scope);
+        n.parameters.forEach((p, i) => { local[p.name] = args[i]; });
+        return execute(n.body, local)?.[RETURN];
+      };
     case "CallExpression": {
       const args = n.arguments.map((a) => evaluate(a, scope));
       const fn = n.base.type === "MemberExpression" ? evaluate(n.base.base, scope)[n.base.identifier.name] : evaluate(n.base, scope);
@@ -94,8 +108,12 @@ function evaluate(n, scope) {
   throw new Error(`unsupported expression ${n.type} ${n.operator || ""}`);
 }
 
-function assign(target, value, scope) {
-  if (target.type === "Identifier") scope[target.name] = value;
+function assign(target, value, scope, local = false) {
+  if (target.type === "Identifier") {
+    let destination = scope;
+    if (!local) while (!Object.hasOwn(destination, target.name) && Object.getPrototypeOf(destination)) destination = Object.getPrototypeOf(destination);
+    destination[target.name] = value;
+  }
   else if (target.type === "MemberExpression") evaluate(target.base, scope)[target.identifier.name] = value;
   else if (target.type === "IndexExpression") evaluate(target.base, scope)[evaluate(target.index, scope)] = value;
   else throw new Error(`unsupported assignment ${target.type}`);
@@ -109,7 +127,7 @@ function execute(body, scope) {
     switch (n.type) {
       case "LocalStatement":
       case "AssignmentStatement":
-        n.variables.forEach((target, i) => assign(target, evaluate(n.init[i], scope), scope));
+        n.variables.forEach((target, i) => assign(target, evaluate(n.init[i], scope), scope, n.type === "LocalStatement"));
         break;
       case "IfStatement":
         for (const clause of n.clauses) {
@@ -122,6 +140,15 @@ function execute(body, scope) {
         break;
       case "CallStatement":
         evaluate(n.expression, scope);
+        break;
+      case "ForGenericStatement":
+        assert.equal(n.iterators.length, 1);
+        for (const values of evaluate(n.iterators[0], scope)) {
+          const local = Object.create(scope);
+          n.variables.forEach((variable, i) => { local[variable.name] = values[i]; });
+          const result = execute(n.body, local);
+          if (result) return result;
+        }
         break;
       case "ReturnStatement":
         return { [RETURN]: n.arguments.length ? evaluate(n.arguments[0], scope) : undefined };
@@ -299,13 +326,13 @@ function extractPollPanel() {
   return after.slice(0, m.index + 2); // include the function's own closing "}"
 }
 const FIXED_POLL_PANEL = extractPollPanel();
-assert.match(FIXED_POLL_PANEL, /if \(justFound\) return;/, "the shipped source must discard this poll's result on any absent-to-loaded discovery, not only a successful injection");
+assert.match(FIXED_POLL_PANEL, /if \(justFound \|\|/, "any absent-to-loaded discovery must defer dispatch until a fresh poll");
 // The exact round-45 (053a57c) shape this test discriminates against:
 // only injectPanel()'s own success returned early. refreshStates() alone
 // revealing the panel already loaded (no injection needed or attempted)
 // fell through and trusted this poll's already-stale `res` regardless.
 const PRE_FIX_POLL_PANEL = FIXED_POLL_PANEL.replace(
-  /let justFound = false;\r?\n  if \(!loaded[\s\S]*?\r?\n  if \(justFound\) return;\r?\n/,
+  /let justFound = false;[\s\S]*?(?=  state\.panelLoaded = loaded;)/,
   `if (!loaded && Date.now() - lastStateRefresh > 15000) {
     lastStateRefresh = Date.now();
     let fresh = false;
@@ -326,6 +353,15 @@ const PRE_FIX_POLL_PANEL = FIXED_POLL_PANEL.replace(
 `,
 );
 assert.doesNotMatch(PRE_FIX_POLL_PANEL, /justFound/, "the pre-fix reconstruction must not still contain the fix");
+
+// Checked round-46 code deferred by discarding, so valid current-generation
+// work was lost. Keep this negative control separate from the older stale
+// dispatch regression: the complete fix must discriminate both failures.
+const REJECTED_POLL_PANEL = FIXED_POLL_PANEL.replace(
+  /  if \(justFound \|\|[\s\S]*?(?=  state\.panelLoaded = loaded;)/,
+  "  if (justFound) return;\n",
+);
+assert.doesNotMatch(REJECTED_POLL_PANEL, /deferredPanelPolls/, "the rejected reconstruction must still discard the drained result");
 
 // mode: "inject" - refreshStates() finds it still missing, injectPanel()
 //   succeeds (the round-45 fix's own case).
@@ -367,6 +403,7 @@ function pollPanelHarness(source, mode) {
     },
     UI_STATE: "InGame", PANEL_STATE: "AICivCopilotPanel", POLL_LUA, UNKNOWN_LOCK: "unknown",
     log: () => {}, stale: false, snapCache: null, applyMultiplayer: () => {}, lastStateRefresh: 0,
+    deferredPanelPolls: [],
     injectPanel: async () => {
       injectCalls.push(mode);
       if (mode !== "inject") return false;
@@ -417,6 +454,247 @@ test("the round-45 pre-fix shape missed the refresh-alone discovery path (this r
   assert.deepEqual(refreshed.handled, [{ id: 17, kind: "quick", key: "heal", generation: 1 }], "confirms the round-45 shape dispatched a request captured before a refresh-alone discovery replaced its mailbox");
   assert.deepEqual(refreshed.recoverCalls, [[{ id: 16, generation: 1 }]]);
   assert.equal(refreshed.resultOf().panelGeneration, 1, "confirms it also adopted the stale generation as current, corrupting later reply/button routing");
+});
+
+const POLL_AST = luaparse.parse(POLL_LUA, { luaVersion: "5.1", encodingMode: "x-user-defined" });
+const recoverStart = SERVER_SOURCE.indexOf("async function recover(list) {");
+const recoverEnd = SERVER_SOURCE.indexOf("// Lock the game core", recoverStart);
+assert.ok(recoverStart >= 0 && recoverEnd > recoverStart);
+const RECOVER_SOURCE = SERVER_SOURCE.slice(recoverStart, recoverEnd);
+
+// The real destructive Lua drain, full pollPanel, real restart recovery and
+// reply protocol all run here. Only game APIs and the final request handler
+// are in-memory sinks: no game, bridge listener or model is started.
+function fullPollHarness(source = FIXED_POLL_PANEL, { mode = "refresh", alreadyRecovered = false, generation = 2, discoveredGeneration = generation } = {}) {
+  const exposedMembers = { AICivCopilot: { generation: generation - 1, nextId: 100 } };
+  runInit(FIXED_INIT, exposedMembers);
+  const handled = [], replies = [], events = [], buttons = [], recoverFlags = [], injectCalls = [];
+  let nextFailure, missingResult = false;
+  const wire = () => {
+    let result;
+    execute(POLL_AST.body, {
+      ExposedMembers: exposedMembers, P: { recover: !env.recovered },
+      GameConfiguration: { IsNetworkMultiplayer: () => false, IsPlayByCloud: () => false, GetHumanPlayerCount: () => 1 },
+      Game: { GetCurrentGameTurn: () => 2 },
+      pcall: (fn) => { try { fn(); return true; } catch { return false; } },
+      pairs: (table) => Object.entries(table),
+      ipairs: (table) => Object.entries(table).map(([key, value]) => [Number(key), value]),
+      emitJson: (value) => {
+        result = JSON.parse(JSON.stringify(value));
+        // Lua's contiguous numeric tables become JSON arrays on the wire.
+        for (const key of ["questions", "recovered", "events"]) if (result[key]) result[key] = Object.values(result[key]);
+      },
+    });
+    return result;
+  };
+  const markLoaded = () => {
+    env.game.tuner.states = [{ name: "InGame" }, { name: "AICivCopilotPanel" }];
+    if (discoveredGeneration !== exposedMembers.AICivCopilot?.generation) {
+      exposedMembers.AICivCopilot = { generation: discoveredGeneration - 1, nextId: 100 };
+      runInit(FIXED_INIT, exposedMembers);
+    }
+  };
+  const respond = async (id, kind, text, { generation } = {}) => {
+    const result = runProtocol(REPLY_LUA, { exposedMembers, params: { id, kind, text, generation } });
+    replies.push(...result.fired);
+  };
+  const env = {
+    game: {
+      connected: true, paused: null, coreLocked: null,
+      tuner: {
+        states: [{ name: "InGame" }, ...(mode === "loaded" ? [{ name: "AICivCopilotPanel" }] : [])],
+        refreshStates: async () => { if (mode === "refresh") markLoaded(); },
+      },
+      lua: async (state, code, options) => {
+        if (code !== POLL_LUA) {
+          assert.equal(state, "AICivCopilotPanel");
+          assert.equal(code, "ContextPtr:SetHide(false)");
+          return { value: null };
+        }
+        assert.equal(state, "InGame");
+        assert.equal(options.params.recover, !env.recovered);
+        recoverFlags.push(options.params.recover);
+        if (nextFailure) { const failure = nextFailure; nextFailure = undefined; throw failure; }
+        if (missingResult) { missingResult = false; return { value: null }; }
+        return { value: wire() };
+      },
+      standing: async () => null,
+    },
+    UI_STATE: "InGame", PANEL_STATE: "AICivCopilotPanel", POLL_LUA, UNKNOWN_LOCK: "unknown",
+    log: () => {}, stale: false, snapCache: null, applyMultiplayer: () => {}, lastStateRefresh: 0,
+    recovered: alreadyRecovered, deferredPanelPolls: [], AI_PROMPTS: {},
+    injectPanel: async () => { injectCalls.push(mode); if (mode !== "inject") return false; markLoaded(); return true; },
+    state: { panel: alreadyRecovered, panelGeneration: alreadyRecovered ? 1 : undefined, lastHistoryTurn: 2 },
+    memory: { events: { add: (list) => events.push(...list) }, history: { record: () => {} } },
+    reply: respond,
+    sendButtons: async (...args) => buttons.push(args),
+    handlePanel: async (q) => {
+      handled.push(JSON.parse(JSON.stringify(q)));
+      // Model/action completion is a stub, but taken is cleared by the real
+      // final-reply Lua, with the same generation checks as the bridge.
+      if (q.id !== 0) await respond(q.id, "answer", "done", { generation: q.generation });
+    },
+    shortModel: (s) => s, ADVISOR_MODEL: "advisor", DIG_MODEL: "dig", TABS: [], abilityButtons: () => [],
+  };
+  const context = vm.createContext(env);
+  vm.runInContext(`${RECOVER_SOURCE}\n${source}\nglobalThis.__invoke = pollPanel;`, context);
+  const queue = (q) => {
+    const mailbox = exposedMembers.AICivCopilot;
+    mailbox.outbox[Object.keys(mailbox.outbox).length + 1] = { generation: mailbox.generation, ...q };
+  };
+  const event = (text) => {
+    const mailbox = exposedMembers.AICivCopilot;
+    mailbox.events[Object.keys(mailbox.events).length + 1] = { kind: "war", text };
+  };
+  return {
+    env, exposedMembers, handled, replies, events, buttons, recoverFlags, injectCalls, queue, event,
+    poll: () => context.__invoke(),
+    failNext: (code = "lost") => { nextFailure = Object.assign(new Error("poll unavailable"), { code }); },
+    omitNext: () => { missingResult = true; },
+    setGeneration: (value) => { exposedMembers.AICivCopilot = { generation: value - 1, nextId: 100 }; runInit(FIXED_INIT, exposedMembers); },
+  };
+}
+
+function seedCurrentWork(h, withRecovery = true) {
+  h.queue({ id: 0, kind: "new" });
+  h.queue({ id: 42, kind: "quick", key: "heal" });
+  h.queue({ id: 43, kind: "ask", text: "question" });
+  h.event("A");
+  if (withRecovery) {
+    const mailbox = h.exposedMembers.AICivCopilot;
+    mailbox.taken[7] = { id: 7, kind: "ask", text: "unfinished question", generation: mailbox.generation };
+    mailbox.taken[8] = { id: 8, kind: "quick", key: "heal", generation: mailbox.generation };
+  }
+}
+
+test("matching deferred work keeps action/AI/New/event order and its original recovery provenance", async () => {
+  for (const mode of ["refresh", "inject"]) for (const alreadyRecovered of [false, true]) {
+    const h = fullPollHarness(FIXED_POLL_PANEL, { mode, alreadyRecovered });
+    seedCurrentWork(h);
+    await h.poll();
+    assert.deepEqual(h.handled, []);
+    assert.deepEqual(h.events, []);
+    assert.equal(h.env.recovered, alreadyRecovered);
+    assert.equal(h.env.deferredPanelPolls.length, 1);
+    h.queue({ id: 44, kind: "ask", text: "fresh question" });
+    h.queue({ id: 0, kind: "new" }); // distinct New clicks must both survive
+    h.event("B");
+    h.exposedMembers.AICivCopilot.version = 99;
+    await h.poll();
+    const ids = h.handled.map((q) => q.id);
+    assert.deepEqual(ids, [...(alreadyRecovered ? [] : [7]), 0, 42, 43, 44, 0]);
+    assert.deepEqual(h.events.map((e) => e.text), ["A", "B"]);
+    assert.deepEqual(h.replies.filter((r) => r[1] === "error").map((r) => r[0]), alreadyRecovered ? [] : [8]);
+    assert.equal(h.env.state.panelGeneration, 2);
+    assert.equal(h.env.state.panelVersion, 99, "fresh metadata must not be replaced by the deferred snapshot");
+    assert.equal(h.env.recovered, true);
+    assert.equal(h.env.deferredPanelPolls.length, 0);
+    for (const id of [42, 43, 44]) assert.equal(h.exposedMembers.AICivCopilot.taken[id], undefined);
+    await h.poll();
+    await h.poll();
+    assert.deepEqual(h.handled.map((q) => q.id), ids, "confirmation work must not repeat later");
+    assert.deepEqual(h.events.map((e) => e.text), ["A", "B"]);
+    assert.equal(h.injectCalls.length, mode === "inject" ? 1 : 0);
+  }
+});
+
+test("the rejected round-46 path loses valid clicks/events and mislabels a new action as restart recovery", async () => {
+  for (const alreadyRecovered of [false, true]) {
+    const h = fullPollHarness(REJECTED_POLL_PANEL, { alreadyRecovered });
+    seedCurrentWork(h);
+    await h.poll();
+    await h.poll();
+    await h.poll();
+    assert.deepEqual(h.handled.map((q) => q.id), alreadyRecovered ? [] : [7, 43]);
+    assert.deepEqual(h.events, []);
+    if (alreadyRecovered) assert.ok(h.exposedMembers.AICivCopilot.taken[42], "the valid click is stranded indefinitely");
+    else assert.ok(h.replies.some((r) => r[0] === 42 && r[1] === "error" && /bridge restarted/.test(r[2])));
+  }
+});
+
+test("changed generation drops deferred questions/recovery/events and accepts only fresh work", async () => {
+  for (const mode of ["refresh", "inject"]) for (const alreadyRecovered of [false, true]) {
+    const h = fullPollHarness(FIXED_POLL_PANEL, { mode, alreadyRecovered, generation: 1, discoveredGeneration: 2 });
+    seedCurrentWork(h);
+    await h.poll();
+    h.queue({ id: 44, kind: "ask", text: "fresh question" });
+    h.event("B");
+    await h.poll();
+    await h.poll();
+    assert.deepEqual(h.handled.map((q) => q.id), [44]);
+    assert.deepEqual(h.events.map((e) => e.text), ["B"]);
+    assert.equal(h.replies.filter((r) => r[1] === "error").length, 0);
+    assert.equal(h.env.state.panelGeneration, 2);
+    assert.equal(h.env.deferredPanelPolls.length, 0);
+  }
+});
+
+test("deferred work survives poll errors or missing results until matching or changed-generation confirmation", async () => {
+  for (const failure of ["lost", "invalid-state", "missing"]) for (const changes of [false, true]) {
+    const h = fullPollHarness();
+    seedCurrentWork(h);
+    await h.poll();
+    if (failure === "missing") h.omitNext(); else h.failNext(failure);
+    await h.poll();
+    assert.equal(h.env.deferredPanelPolls.length, 1);
+    assert.deepEqual(h.handled, []);
+    if (changes) h.setGeneration(3);
+    h.queue({ id: 44, kind: "ask", text: "fresh question" });
+    h.event("B");
+    await h.poll();
+    assert.deepEqual(h.handled.map((q) => q.id), changes ? [44] : [7, 0, 42, 43, 44]);
+    assert.deepEqual(h.events.map((e) => e.text), changes ? ["B"] : ["A", "B"]);
+    assert.deepEqual(h.replies.filter((r) => r[1] === "error").map((r) => r[0]), changes ? [] : [8]);
+    assert.equal(h.env.deferredPanelPolls.length, 0);
+  }
+});
+
+test("another unconfirmed drain preserves both batches and avoids recovering either batch's new clicks", async () => {
+  const h = fullPollHarness();
+  seedCurrentWork(h);
+  await h.poll();
+  h.env.game.tuner.states = [{ name: "InGame" }];
+  h.env.lastStateRefresh = Date.now(); // no discovery this time
+  h.queue({ id: 45, kind: "quick", key: "heal" });
+  h.event("B");
+  await h.poll();
+  assert.equal(h.env.deferredPanelPolls.length, 2);
+  assert.deepEqual(h.handled, []);
+  h.env.game.tuner.states.push({ name: "AICivCopilotPanel" });
+  h.queue({ id: 44, kind: "ask", text: "fresh question" });
+  h.event("C");
+  await h.poll();
+  await h.poll();
+  assert.deepEqual(h.handled.map((q) => q.id), [7, 0, 42, 43, 45, 44]);
+  assert.deepEqual(h.events.map((e) => e.text), ["A", "B", "C"]);
+  assert.deepEqual(h.replies.filter((r) => r[1] === "error").map((r) => r[0]), [8]);
+});
+
+test("already-loaded and failed-injection paths retain their established dispatch behavior", async () => {
+  for (const mode of ["loaded", "failed"]) {
+    const h = fullPollHarness(FIXED_POLL_PANEL, { mode });
+    seedCurrentWork(h);
+    await h.poll();
+    assert.deepEqual(h.handled.map((q) => q.id), mode === "loaded" ? [7, 0, 42, 43] : []);
+    assert.equal(h.env.recovered, mode === "loaded");
+    assert.equal(h.env.deferredPanelPolls.length, 0);
+  }
+});
+
+test("an unstamped deferred snapshot cannot authorize replay; ordinary legacy polling still dispatches", async () => {
+  const h = fullPollHarness();
+  seedCurrentWork(h, false);
+  delete h.exposedMembers.AICivCopilot.generation;
+  await h.poll();
+  // markLoaded reinitialized the unstamped mailbox under confirmed gen2.
+  h.queue({ id: 44, kind: "ask", text: "fresh question" });
+  await h.poll();
+  assert.deepEqual(h.handled.map((q) => q.id), [44]);
+  const legacy = fullPollHarness(FIXED_POLL_PANEL, { mode: "loaded" });
+  delete legacy.exposedMembers.AICivCopilot.generation;
+  legacy.queue({ id: 44, kind: "ask", text: "legacy question" });
+  await legacy.poll();
+  assert.deepEqual(legacy.handled.map((q) => q.id), [44]);
 });
 
 test("the panel's own OnButtons/OnReply guard line mirrors the same confirmed-mismatch-only rule", () => {

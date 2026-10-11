@@ -281,6 +281,9 @@ function applyMultiplayer(res) {
 }
 
 let recovered = false;
+// POLL_LUA drains the mailbox before a later state refresh can discover the
+// panel. Keep those batches until a fresh poll confirms their generation.
+let deferredPanelPolls = [];
 let lastStateRefresh = 0;
 let lastInject = 0;
 
@@ -346,17 +349,9 @@ async function pollPanel() {
   // Injecting happens only right after a fresh state list confirms the panel
   // is missing, so a slow list never leads to a second panel.
   let loaded = game.tuner.states.some((s) => s.name === PANEL_STATE);
-  // Discovered true below (by refreshStates() alone, or by injectPanel())
-  // means the panel was not loaded a moment ago, when POLL_LUA drained res
-  // (above) - from whatever (possibly another game's, possibly stale)
-  // mailbox existed then, not this panel's own, which may have since
-  // (re)initialized and advanced past it entirely on its own, with no
-  // injection involved. Trusting res here - the bug this exact pattern
-  // already fixed once for the panel's own init - would dispatch/recover a
-  // stale request as if it were this panel's own and adopt its stale
-  // generation. Deferring to the next poll (500 ms later) instead, which
-  // reads this panel's genuinely fresh mailbox regardless of which of the
-  // two paths below found it.
+  // A discovery below cannot tell whether res predates panel init or the
+  // state cache simply missed an already initialized panel. A fresh poll
+  // must confirm its generation before any drained work can be accepted.
   let justFound = false;
   if (!loaded && Date.now() - lastStateRefresh > 15000) {
     lastStateRefresh = Date.now();
@@ -375,7 +370,30 @@ async function pollPanel() {
       justFound = loaded = await injectPanel();
     }
   }
-  if (justFound) return;
+  if (justFound || (deferredPanelPolls.length && !(loaded && res.panel))) {
+    deferredPanelPolls.push(res);
+    return;
+  }
+  if (loaded && res.panel && deferredPanelPolls.length) {
+    // Only a known matching generation proves a deferred mailbox belongs
+    // here. Unstamped deferred data cannot be confirmed; ordinary current
+    // polls retain their existing legacy behavior. Use fresh metadata, and
+    // merge only the destructively drained lanes in their original order.
+    const polls = [...deferredPanelPolls.filter((p) => p.generation != null && p.generation === res.generation), res];
+    deferredPanelPolls = []; // consume before any dispatch or recovery
+    const questions = polls.flatMap((p) => p.questions || []);
+    const questionIds = new Set(questions.filter((q) => q.id != null && q.id !== 0).map((q) => q.id));
+    const seen = new Set();
+    // The confirmation poll now sees deferred questions in taken. They
+    // still belong to normal dispatch, not restart recovery (which refuses
+    // actions). Genuine pre-existing recovery entries keep their behavior.
+    const recovery = polls.flatMap((p) => p.recovered || []).filter((q) => {
+      if (questionIds.has(q.id) || seen.has(q.id)) return false;
+      seen.add(q.id);
+      return true;
+    });
+    res = { ...res, questions, recovered: recovery, events: polls.flatMap((p) => p.events || []) };
+  }
   state.panelLoaded = loaded;
   state.panelVersion = res.version ?? null;
   if (res.events?.length) {
@@ -414,14 +432,9 @@ async function pollPanel() {
     game.standing().then((s) => s && !s.error && memory.history.record(s)).catch((err) => log(`standing: ${err.message}`));
   }
   state.turn = res.turn ?? state.turn;
-  // POLL_LUA drains outbox/taken unconditionally, before this function ever
-  // learns whether the panel's own Lua state - and so its init, which clears
-  // a previous game's leftovers - has run in this game yet (loaded, above).
-  // A poll landing in that window would otherwise hand a previous session's
-  // queued click or in-flight request to handlePanel/recover as if it were
-  // this game's own; discard it instead, exactly like the panel's own init
-  // discards it once it does run - nothing legitimate can be queued yet
-  // regardless, since the panel has no button to click until it is loaded.
+  // An absent panel cannot authorize dispatch. Discovery batches above wait
+  // for generation confirmation; accepted questions retain normal dispatch
+  // while genuine prior requests retain their restart-recovery behavior.
   if (!recovered && loaded) {
     recovered = true;
     await recover(res.recovered);
