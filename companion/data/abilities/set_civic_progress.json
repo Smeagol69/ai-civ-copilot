@@ -1,0 +1,40 @@
+{
+  "name": "set_civic_progress",
+  "description": "Set a player's culture progress on a specific civic to an exact value (or a fraction of its cost), via Player:GetCulture():SetCulturalProgress(civicIndex, culture) in GameCore_Tuner (Firaxis Debug/Player.ltp civic list, which sets it to GetCultureCost to complete). Partial alternative to grant_civic: shave turns off a civic or set it back. Verified live turn 60: Military Tradition 26.75/50 -> 40 took turns left 10 -> 5 (InGame GetCulturalProgress and GetTurnsLeft matched exactly), and setting 26.7461 restored 10 turns. Setting >= cost should complete it at the next culture processing (not tested). Params: civic (CIVIC_* type, required), progress (absolute culture points) or fraction (0-1 of the civic's cost; one of the two required), playerId (default local player). Returns the civic's cost and turns-left-on-current-civic before/after; exact progress must be read InGame (GameCore Culture has no GetCulturalProgress).",
+  "state": "GameCore_Tuner",
+  "kind": "edit",
+  "properties": {
+    "civic": {
+      "type": "string",
+      "description": "CIVIC_* type"
+    },
+    "progress": {
+      "type": "number",
+      "description": "absolute culture points to set"
+    },
+    "fraction": {
+      "type": "number",
+      "description": "fraction of the civic's culture cost (0-1), used if progress omitted"
+    },
+    "playerId": {
+      "type": "integer",
+      "description": "player id (default local player)"
+    }
+  },
+  "required": [
+    "civic"
+  ],
+  "lua": "local pid = P.playerId or Game.GetLocalPlayer()\nlocal pl = Players[pid]\nif not pl then emitJson({error=\"no player \"..tostring(pid)}); return end\nlocal row = GameInfo.Civics[P.civic]\nif not row then emitJson({error=\"unknown civic \"..tostring(P.civic)}); return end\nlocal cu = pl:GetCulture()\nlocal cost = cu:GetCultureCost(row.Index)\nlocal target = P.progress\nif target == nil and P.fraction ~= nil then target = cost * P.fraction end\nif target == nil then emitJson({error=\"give progress or fraction\", cost=cost, turnsLeftCurrentCivic=cu:GetTurnsLeftOnCurrentCivic()}); return end\nif target < 0 then target = 0 end\nlocal t0 = cu:GetTurnsLeftOnCurrentCivic()\ncu:SetCulturalProgress(row.Index, target)\nemitJson({playerId=pid, civic=row.CivicType, cost=cost, setTo=target, turnsLeftCurrentCivicBefore=t0, turnsLeftCurrentCivicAfter=cu:GetTurnsLeftOnCurrentCivic(), note=\"read exact progress InGame: GetCulture():GetCulturalProgress(index)\"})",
+  "tested": {
+    "at": "2026-10-07T23:18:53.563Z",
+    "params": {
+      "civic": "CIVIC_MILITARY_TRADITION",
+      "progress": 26.7461
+    },
+    "result": "{\"value\":{\"turnsLeftCurrentCivicBefore\":10,\"setTo\":26.7461,\"note\":\"read exact progress InGame: GetCulture():GetCulturalProgress(index)\",\"turnsLeftCurrentCivicAfter\":10,\"playerId\":0,\"cost\":50,\"civic\":\"CIVIC_MILITARY_TRADITION\"},\"text\":[]}"
+  },
+  "createdAt": "2026-10-07T23:18:53.563Z",
+  "updatedAt": "2026-10-07T23:18:53.563Z",
+  "uses": 0,
+  "history": []
+}

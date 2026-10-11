@@ -659,8 +659,10 @@
    "state": "GameCore_Tuner",
    "holder": "City:GetBuildQueue",
    "method": "CreateIncompleteBuilding",
-   "status": "evidenced",
-   "notes": [],
+   "status": "ability",
+   "notes": [
+    "2026-10-07 CreateIncompleteBuilding(buildingIndex, 100) returns true and places a completed building instantly (Kraków Monument: HasBuilding true, culture +2). With 50 it returned false and nothing changed (GetBuildingProgress stayed 0). Reverted with CityBuildings:RemoveBuilding + BuildQueue:RemoveBuilding, as Debug/City.ltp does."
+   ],
    "kind": "write",
    "leverage": 68,
    "evidence": {
@@ -686,7 +688,8 @@
       "ctx": "tuner"
      }
     ]
-   }
+   },
+   "ability": "city_building_add_remove"
   },
   "GameCore_Tuner|City:GetBuildQueue|CreateIncompleteDistrict": {
    "state": "GameCore_Tuner",
@@ -898,8 +901,10 @@
    "state": "GameCore_Tuner",
    "holder": "City:GetBuildQueue",
    "method": "RemoveBuilding",
-   "status": "evidenced",
-   "notes": [],
+   "status": "ability",
+   "notes": [
+    "2026-10-07 Called together with City:GetBuildings():RemoveBuilding(index) (City.ltp shape); Monument removed from Kraków, HasBuilding back to false and culture back to 2.2 (turn 60)."
+   ],
    "kind": "write",
    "leverage": 68,
    "evidence": {
@@ -918,7 +923,8 @@
       "ctx": "tuner"
      }
     ]
-   }
+   },
+   "ability": "city_building_add_remove"
   },
   "GameCore_Tuner|City:GetBuildQueue|RemoveDistrict": {
    "state": "GameCore_Tuner",
@@ -2070,8 +2076,10 @@
    "state": "GameCore_Tuner",
    "holder": "Player:GetCulture",
    "method": "SetCulturalProgress",
-   "status": "evidenced",
-   "notes": [],
+   "status": "ability",
+   "notes": [
+    "2026-10-07 SetCulturalProgress(civicIndex, culture) sets absolute progress; Military Tradition 26.75 -> 40 made turns left 10 -> 5 (InGame GetCulturalProgress/GetTurnsLeft matched), restored exactly to 26.7461 / 10 turns (turn 60)."
+   ],
    "kind": "write",
    "leverage": 68,
    "evidence": {
@@ -2090,7 +2098,8 @@
       "ctx": "tuner"
      }
     ]
-   }
+   },
+   "ability": "set_civic_progress"
   },
   "GameCore_Tuner|Player:GetCulture|SetCurrentGovernment": {
    "state": "GameCore_Tuner",
@@ -8053,8 +8062,10 @@
    "state": "GameCore_Tuner",
    "holder": "Unit:GetExperience",
    "method": "SetPromotion",
-   "status": "evidenced",
-   "notes": [],
+   "status": "ability",
+   "notes": [
+    "2026-10-07 SetPromotion(promotionIndex) grants the promotion immediately without a level; HasPromotion flipped false->true in GameCore and InGame on a spawned barbarian Archer (turn 60), then the test unit was deleted. No RemovePromotion in GameCore."
+   ],
    "kind": "write",
    "leverage": 68,
    "evidence": {
@@ -8073,7 +8084,8 @@
       "ctx": "tuner"
      }
     ]
-   }
+   },
+   "ability": "grant_unit_promotion"
   },
   "GameCore_Tuner|Unit:GetExperience|SetVeteranName": {
    "state": "GameCore_Tuner",
@@ -70886,6 +70898,26 @@
     "action": 33
    },
    "runs": 10
+  },
+  {
+   "at": "2026-10-07T23:23:40.798Z",
+   "stage": "map",
+   "ms": 275,
+   "added": 0,
+   "total": 2458,
+   "byStatus": {
+    "evidenced": 1130,
+    "unknown": 652,
+    "probed": 667,
+    "ability": 9
+   },
+   "byKind": {
+    "write": 298,
+    "read": 1965,
+    "other": 162,
+    "action": 33
+   },
+   "runs": 11
   }
  ]
 }

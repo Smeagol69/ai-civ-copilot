@@ -1,0 +1,38 @@
+{
+  "name": "grant_unit_promotion",
+  "description": "Grant a specific promotion to any unit (any player's) without spending a promotion level, via Unit:GetExperience():SetPromotion(index) in GameCore_Tuner (Firaxis Debug/Unit.ltp promotion list). Params: unitId (required), promotion (PROMOTION_* type from GameInfo.UnitPromotions, required), playerId (unit owner, default local player). Returns HasPromotion before/after and the unit's full promotion list. Verified live turn 60: PROMOTION_VOLLEY on a test Archer flipped HasPromotion false -> true in both GameCore and InGame (InGame GetLevel became 1); XP and CanPromote unchanged. No remove function exists in GameCore (irreversible except by deleting the unit); the function does not check the promotion class matches the unit - pass only promotions valid for the unit's class.",
+  "state": "GameCore_Tuner",
+  "kind": "edit",
+  "properties": {
+    "unitId": {
+      "type": "integer",
+      "description": "unit id"
+    },
+    "promotion": {
+      "type": "string",
+      "description": "PROMOTION_* type"
+    },
+    "playerId": {
+      "type": "integer",
+      "description": "unit owner id (default local player)"
+    }
+  },
+  "required": [
+    "unitId",
+    "promotion"
+  ],
+  "lua": "local pid = P.playerId or Game.GetLocalPlayer()\nlocal pl = Players[pid]\nif not pl then emitJson({error=\"no player \"..tostring(pid)}); return end\nlocal u = pl:GetUnits():FindID(P.unitId)\nif not u then emitJson({error=\"no unit \"..tostring(P.unitId)..\" for player \"..tostring(pid)}); return end\nlocal row = GameInfo.UnitPromotions[P.promotion]\nif not row then emitJson({error=\"unknown promotion \"..tostring(P.promotion)}); return end\nlocal xp = u:GetExperience()\nlocal before = xp:HasPromotion(row.Index)\nif not before and not (P.dryRun) then xp:SetPromotion(row.Index) end\nlocal after = xp:HasPromotion(row.Index)\nlocal list = {}\nfor r in GameInfo.UnitPromotions() do if xp:HasPromotion(r.Index) then table.insert(list, r.UnitPromotionType) end end\nemitJson({unitId=P.unitId, unitType=GameInfo.Units[u:GetType()].UnitType, promotion=row.UnitPromotionType, promotionClass=row.PromotionClass, hadBefore=before, hasAfter=after, promotions=list, xp=xp:GetExperiencePoints(), canPromote=xp:CanPromote()})",
+  "tested": {
+    "at": "2026-10-07T23:16:57.114Z",
+    "params": {
+      "unitId": 720899,
+      "promotion": "PROMOTION_VOLLEY",
+      "dryRun": true
+    },
+    "result": "{\"value\":{\"hadBefore\":false,\"unitId\":720899,\"promotions\":[],\"promotionClass\":\"PROMOTION_CLASS_RANGED\",\"unitType\":\"UNIT_ARCHER\",\"hasAfter\":false,\"xp\":0,\"promotion\":\"PROMOTION_VOLLEY\",\"canPromote\":false},\"text\":[]}"
+  },
+  "createdAt": "2026-10-07T23:16:57.115Z",
+  "updatedAt": "2026-10-07T23:16:57.115Z",
+  "uses": 0,
+  "history": []
+}
